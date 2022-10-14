@@ -1,0 +1,4 @@
+[submodule "tools/linter"]
+	path = tools/linter
+	url = git@github.com:NewThinker-Jeffrey/linter.git
+	branch = python3
