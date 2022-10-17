@@ -68,3 +68,17 @@ Build
 ```
 catkin build <target_packge_name>
 ```
+
+### Run UT
+
+To build & run a catkin test for a specific catkin package:
+```
+catkin run_tests --no-dep <package_name> 
+```
+
+To run a catkin test for a specific catkin package, from a directory within that package:
+```
+catkin run_tests --no-dep --this
+```
+
+For more information: https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_test.html
