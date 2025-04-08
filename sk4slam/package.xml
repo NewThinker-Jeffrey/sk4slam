@@ -9,11 +9,32 @@
   <author>Jeffrey</author>
   <license>New BSD</license>
 
+  <!-- for ros1 build -->
   <buildtool_depend>catkin</buildtool_depend>
 
-  <depend>sk4slam_common</depend>
-  <depend>sk4slam_numerical</depend>
-   <export>
-     <metapackage />
-   </export>
+  <!-- for no ros build -->
+  <!-- <buildtool_depend>cmake</buildtool_depend> -->
+
+  <build_depend>git</build_depend>
+
+  <!-- only for unit test -->
+  <build_depend>google-mock</build_depend>
+  <build_depend>gtest</build_depend>
+  <depend>libgflags-dev</depend>
+  <depend>libgoogle-glog-dev</depend>
+
+  <!-- dependencies -->
+  <depend>eigen</depend>
+  <depend>gtsam</depend>
+  <depend>libceres-dev</depend>
+  <depend>libopencv-dev</depend>
+  <depend>libyaml-cpp-dev</depend>
+  <export>
+    <!-- for ros1 build -->
+    <build_type>catkin</build_type>
+    <rosdoc config="rosdoc.yaml" />
+
+    <!-- for no ros build -->
+    <!-- <build_type>cmake</build_type> -->
+  </export>
 </package>
