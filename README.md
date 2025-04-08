@@ -1,7 +1,7 @@
 # sk4slam
 A Swiss knife for SLAM.
 
-
+*Detailed docs are coming... maybe. If I can get around to it...* :P
 
 ## Developing
 
