@@ -12,6 +12,7 @@
 
 #include "sk4slam_basic/logging.h"
 #include "sk4slam_basic/template_helper.h"
+#include "sk4slam_cpp/deque.h"
 #include "sk4slam_cpp/mutex.h"
 
 // C++17 is required since we need the syntax "if constexpr".
@@ -177,10 +178,12 @@ class WorkQueue {
 
   bool addWorkItem(WorkInput input, bool log_drop = false) REQUIRES(mutex_) {
     size_t idx = num_enqueued_++;
+    bool need_trim = false;
     if (max_queue_size_ > 0 && queue_.size() >= max_queue_size_) {
       if (remove_old_jobs_on_full_queue_) {
         unfinished_jobs_.erase(queue_.front()->enqueued_idx);
-        queue_.pop();
+        queue_.pop_front();
+        need_trim = true;
         if (log_drop) {
           LOGW(
               "WorkQueue %s: queue full! dropped the oldest job!",
@@ -196,7 +199,10 @@ class WorkQueue {
       }
     }
     ASSERT(queue_.size() < max_queue_size_);
-    queue_.emplace(new WorkItem(std::move(input), idx));
+    queue_.emplace_back(new WorkItem(std::move(input), idx));
+    if (need_trim) {
+      queue_.trim_to_optimal();  // queue_.shrink_to_fit();
+    }
     unfinished_jobs_.insert(idx);
     return true;
   }
@@ -217,7 +223,7 @@ class WorkQueue {
         if (stop_request_) {
           if (!wait_until_all_jobs_done_) {
             // queue_.clear();
-            queue_ = std::queue<WorkItemPtr>();
+            queue_ = Deque<WorkItemPtr>();
             if constexpr (mode_ == WorkQueueMode::FIFO_ORDER) {
               ready_outputs_.clear();
               // unfinished_jobs_.clear();
@@ -228,7 +234,8 @@ class WorkQueue {
           }
         }
         work_item = queue_.front();
-        queue_.pop();
+        queue_.pop_front();
+        queue_.trim_to_optimal();  // queue_.shrink_to_fit();
       }
 
       if constexpr (mode_ == WorkQueueMode::FIFO_ORDER) {
@@ -281,7 +288,7 @@ class WorkQueue {
 
   mutable Mutex mutex_;
   ConditionVariable cv_ GUARDED_BY(mutex_);
-  std::queue<WorkItemPtr> queue_ GUARDED_BY(mutex_);
+  Deque<WorkItemPtr> queue_ GUARDED_BY(mutex_);
   size_t num_enqueued_ GUARDED_BY(mutex_) = 0;
   std::set<size_t> unfinished_jobs_ GUARDED_BY(mutex_);
 

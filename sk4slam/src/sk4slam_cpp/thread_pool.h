@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "sk4slam_basic/string_helper.h"
+#include "sk4slam_cpp/deque.h"
 #include "sk4slam_cpp/mutex.h"
 
 namespace sk4slam {
@@ -193,7 +194,7 @@ class ThreadPool {
 
   mutable Mutex mutex_;
   ConditionVariable cond_ GUARDED_BY(mutex_);
-  std::deque<TaskID> pending_tasks_ GUARDED_BY(mutex_);
+  Deque<TaskID> pending_tasks_ GUARDED_BY(mutex_);
   bool frozen_ GUARDED_BY(mutex_) = false;
   bool stop_request_ GUARDED_BY(mutex_) = false;
   bool stopped_ GUARDED_BY(mutex_) = false;

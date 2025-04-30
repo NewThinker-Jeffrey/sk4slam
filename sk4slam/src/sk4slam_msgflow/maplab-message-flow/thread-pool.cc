@@ -125,6 +125,7 @@ void ThreadPool::run(bool realtime) {
           }
           ++index;
         }
+        groupid_tasks_.trim_to_optimal();  // groupid_tasks_.shrink_to_fit();
       }
       if (task) {
         break;

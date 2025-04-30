@@ -19,6 +19,28 @@ TEST(TestIsLieGroup, Main) {
   ASSERT_TRUE(IsLieGroup<SE3d>);
 }
 
+TEST(TestLieGroup, Cast) {
+  {
+    SO3d gd;
+    auto gf = gd.cast<float>();
+    LOGI("SO3f: %s", toOneLineStr(gf.matrix()).c_str());
+  }
+
+  {
+    ProductLieGroup<SO3d, SO3d, SO3d> dddd;
+    auto ffff = dddd.cast<float>();
+    LOGI(
+        "ProductLieGroup<float>::part<0>: %s",
+        toOneLineStr(ffff.part<0>().matrix()).c_str());
+  }
+
+  {
+    SE3d gd;
+    auto gf = gd.cast<float>();
+    LOGI("SE3f: %s", toOneLineStr(gf.matrix()).c_str());
+  }
+}
+
 TEST(TestProductLieGroup, Main) {
   ProductLieGroup<SO3d, SO3d, SO3d> dddd;
   ASSERT_EQ(dddd.kDim, 9);

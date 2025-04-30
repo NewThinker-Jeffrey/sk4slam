@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "sk4slam_basic/logging.h"
+#include "sk4slam_cpp/deque.h"
 
 namespace sk4slam_msgflow {
 // UNIQUE_ID_DEFINE_ID(MessageDeliveryQueueId);
@@ -64,6 +65,7 @@ class MessageDeliveryQueue : public MessageDeliveryQueueBase {
       ASSERT(!message_queue_.empty());
       message = message_queue_.front();
       message_queue_.pop_front();
+      message_queue_.trim_to_optimal();  // message_queue_.shrink_to_fit();
     }
 
     // Run the subscriber callback; the lock ensures only one callback can be
@@ -99,7 +101,7 @@ class MessageDeliveryQueue : public MessageDeliveryQueueBase {
   const SubscriberCallback subscriber_callback_;
 
   mutable std::mutex m_message_queue_;
-  std::deque<MessageType> message_queue_;
+  sk4slam::Deque<MessageType> message_queue_;
 };
 }  // namespace sk4slam_msgflow
 // UNIQUE_ID_DEFINE_ID_HASH(sk4slam_msgflow::MessageDeliveryQueueId);

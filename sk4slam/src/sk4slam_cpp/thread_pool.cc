@@ -631,6 +631,7 @@ TaskID ThreadPool::waitForNextTask(bool* p_exit) {
     } else if (!pending_tasks_.empty()) {
       task = pending_tasks_.front();
       pending_tasks_.pop_front();
+      pending_tasks_.trim_to_optimal();  // pending_tasks_.shrink_to_fit();
       return true;
     } else if (stop_request_) {  // wait_all_tasks_done_before_stop_
       if (0 == task_manager_->numUnfinishedTasksForThreadPool(id())) {

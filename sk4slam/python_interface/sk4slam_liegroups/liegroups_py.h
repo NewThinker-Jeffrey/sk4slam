@@ -19,6 +19,7 @@
       .def("isApprox", &LieGroup::isApprox)                                   \
       .def_static("Identity", &LieGroup::Identity)                            \
       .def_static("Log", &LieGroup::Log)                                      \
+      .def_static("Exp", &LieGroup::Exp)                                      \
       .def_static(                                                            \
           "Ad",                                                               \
           static_cast<LieGroup::LieAlgebraEndomorphism(*)(const LieGroup&)>(  \
@@ -50,6 +51,7 @@
       .def("isApprox", &ProductGroup::isApprox<ProductGroup>)               \
       .def_static("Identity", &ProductGroup::Identity<ProductGroup>)        \
       .def_static("Log", &ProductGroup::Log<ProductGroup>)                  \
+      .def_static("Exp", &ProductGroup::Exp<ProductGroup>)                  \
       .def_static(                                                          \
           "Ad",                                                             \
           static_cast<ProductGroup::LieAlgebraEndomorphism(*)(              \
@@ -73,6 +75,12 @@
 #define DEFINE_ADDITIONAL_PY_INTERFACE_FOR_MATRIX_GROUP(MatrixGroup)     \
   def(py::init<const Eigen::MatrixXd&>()) /*Construct from matrix*/      \
       .def("matrix", &MatrixGroup::matrix)                               \
+      .def(                                                              \
+          "__mul__", /* Multiply by vector from the right */             \
+          [](const MatrixGroup& g, const Eigen::VectorXd& mat) {         \
+            return Eigen::VectorXd(g * mat);                             \
+          },                                                             \
+          py::is_operator())                                             \
       .def(                                                              \
           "__mul__", /* Multiply by matrix from the right */             \
           [](const MatrixGroup& g, const Eigen::MatrixXd& mat) {         \

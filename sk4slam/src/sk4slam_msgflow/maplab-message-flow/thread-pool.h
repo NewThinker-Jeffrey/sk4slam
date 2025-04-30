@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "sk4slam_basic/logging.h"
+#include "sk4slam_cpp/deque.h"
 
 namespace sk4slam_msgflow {
 
@@ -102,7 +103,7 @@ class ThreadPool {
   // represents a non-exclusive task that needs no guarantees on its execution
   // order. All tasks with other group ids have guaranteed execution order that
   // corresponds to order of enqueing the task.
-  typedef std::deque<std::pair<size_t, std::function<void()>>> TaskDeque;
+  typedef sk4slam::Deque<std::pair<size_t, std::function<void()>>> TaskDeque;
   TaskDeque groupid_tasks_;
   // The guard map should never contain negative group ids.
   typedef std::unordered_map<size_t, bool> GuardMap;

@@ -293,7 +293,8 @@ class LieGroupExtension : public BaseGroup {
   template <typename _ScalarType>
   DerivedExtensionTemplate<_ScalarType, Rest...> cast() const {
     DerivedExtensionTemplate<_ScalarType, Rest...> derived;
-    BaseGroup& base = derived;
+    typename DerivedExtensionTemplate<_ScalarType, Rest...>::ExtensionBase&
+        base = derived;
     base = BaseGroup::template cast<_ScalarType>();
     return derived;
   }
