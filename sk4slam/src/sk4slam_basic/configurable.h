@@ -404,7 +404,7 @@ struct Configurable {
 
 #define CONFIG_OPTIONAL_MEM(member) CONFIG_UPDT_I(config, member)
 
-#define CONFIG_REQUIRED_MEM(member) CONFIG_UPDT_I(config, member)
+#define CONFIG_REQUIRED_MEM(member) CONFIG_LOAD_I(config, member)
 
 #define CONFIG_OPTIONAL_SUB_MEM(member) \
   member = decltype(member)(config.get(#member))

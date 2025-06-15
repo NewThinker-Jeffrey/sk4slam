@@ -103,7 +103,6 @@ class ImuIntegration {
   /// pose part, and vector perturbation for the velocity part.
   using StateRetraction = ProductRetraction<
       State, Pose3d::AffineLeftPerturbation, VectorSpaceRetraction<3>>;
-
   using OptimizableState = OptimizableManifold<State, StateRetraction>;
 
   /// @brief  Defines the IMU integration result
@@ -260,6 +259,11 @@ class ImuIntegration {
       double gravity_magnitude = 9.81,
       const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1)) const;
 
+  std::unordered_map<Timestamp, State> retrieveStates(
+      const std::vector<Timestamp>& timestamps, bool apply_gravity = true,
+      double gravity_magnitude = 9.81,
+      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1)) const;
+
   /// Find the IMU integration result at a given timestamp. This function
   /// is only valid when the IMU integration result is cached (see @ref
   /// Options::cache_intermediate_results). The given timestamp must be
@@ -284,13 +288,30 @@ class ImuIntegration {
       const Vector3d& new_gyro, const Vector3d& prev_accel,
       const Vector3d& new_accel);
 
+  struct DeltaToNext;
+  bool retrieveState(
+      int begin_idx, const Timestamp& timestamp, State* state,
+      bool apply_gravity, double gravity_magnitude,
+      const Vector3d& gravity_direction_in_ref,
+      std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>>*
+          cached_deltas = nullptr) const;
+
   /// @brief  Interpolate between two inertial states
-  /// @param alpha   The interpolation factor (between 0 and 1)
+  /// @param t The time at which to interpolate
+  /// @param t0  The first time
+  /// @param t1   The second time
   /// @param state0   The first state
   /// @param state1   The second state
   /// @param interpolated[out]   The interpolated state
-  virtual void interpolate(
-      double alpha, const State& state0, const State& state1,
+  /// @param deltaR01[out]   The change in rotation between the two states
+  /// @param deltaV01[out]   The change in velocity between the two states
+  void interpolate(
+      double t, double t0, double t1, const State& state0, const State& state1,
+      State* interpolated, Eigen::Vector3d* deltaR01 = nullptr,
+      Eigen::Vector3d* deltaV01 = nullptr) const;
+  void interpolate(
+      double t, double t0, double t1, const State& state0,
+      const Eigen::Vector3d& deltaR01, const Eigen::Vector3d& deltaV01,
       State* interpolated) const;
 
   /// @brief  Apply gravity to the given state, transforming it from the

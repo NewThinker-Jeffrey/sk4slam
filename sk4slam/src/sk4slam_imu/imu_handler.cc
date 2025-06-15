@@ -338,6 +338,17 @@ bool ImuHandler::Segment::predictRotation(
   return true;
 }
 
+std::unordered_map<double, Rot3d> ImuHandler::Segment::predictRotations(
+    const std::vector<double> times, const Rot3d& start_rot) const {
+  std::unordered_map<double, ImuIntegration::State> states =
+      pre_integration->retrieveStates(times, false);
+  std::unordered_map<double, Rot3d> rotations;
+  for (const auto& [time, state] : states) {
+    rotations[time] = start_rot * state.R();
+  }
+  return rotations;
+}
+
 bool ImuHandler::Segment::predictState(
     double time, Pose3d* predicted_pose, Eigen::Vector3d* predicted_vel,
     const Pose3d& start_pose, const Eigen::Vector3d& start_vel,
@@ -364,6 +375,32 @@ bool ImuHandler::Segment::predictState(
   }
 
   return true;
+}
+
+std::unordered_map<double, ImuIntegration::State>
+ImuHandler::Segment::predictStates(
+    const std::vector<double> times, const Pose3d& start_pose,
+    const Eigen::Vector3d& start_vel, bool apply_gravity,
+    bool trasform_velocity) const {
+  const Rot3d& start_rot = start_pose.rotation();
+  Eigen::Vector3d gravity_in_start_frame =
+      start_rot.matrix().transpose().col(2);
+  std::unordered_map<double, ImuIntegration::State> states =
+      pre_integration->retrieveStates(
+          times, apply_gravity, 9.81, gravity_in_start_frame);
+
+  // Transform the states to the start frame
+  for (auto& [time, state] : states) {
+    double dt = time - start_time;
+    state.R() = start_rot * state.R();
+    state.p() =
+        start_pose.translation() + start_vel * dt + start_rot * state.p();
+    if (trasform_velocity) {
+      state.v() = start_vel + start_rot * state.v();
+    }
+  }
+
+  return states;
 }
 
 }  // namespace sk4slam

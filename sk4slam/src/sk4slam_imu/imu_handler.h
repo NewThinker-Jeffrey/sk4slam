@@ -134,6 +134,10 @@ class ImuHandler {
       return predictRotation(end_time, end_rot, start_rot);
     }
 
+    std::unordered_map<double, Rot3d> predictRotations(
+        const std::vector<double> times,
+        const Rot3d& start_rot = Rot3d::Identity()) const;
+
     bool predictState(
         double time, Pose3d* predicted_pose,
         Eigen::Vector3d* predicted_vel = nullptr,
@@ -149,6 +153,13 @@ class ImuHandler {
       return predictState(
           end_time, end_pose, end_vel, start_pose, start_vel, apply_gravity);
     }
+
+    std::unordered_map<double, ImuIntegration::State> predictStates(
+        const std::vector<double> times,
+        const Pose3d& start_pose = Pose3d::Identity(),
+        const Eigen::Vector3d& start_vel = Eigen::Vector3d::Zero(),
+        bool apply_gravity = true, bool trasform_velocity = true) const;
+
     /// @}
   };
 
@@ -229,7 +240,7 @@ class ImuHandler {
 
  private:
   UniqueId imu_uid_;
-  Options options_;   ///< Configuration options for vibration detection.
+  Options options_;   ///< Configuration options.
   ImuSigmas sigmas_;  ///< IMU noise characteristics.
 
   mutable std::map<double, std::shared_ptr<Segment>> segments_cache_;

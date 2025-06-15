@@ -43,17 +43,12 @@ struct Pose3WithCov {
   using Matrix6 = Eigen::Matrix<Scalar, 6, 6>;
   using Matrix12 = Eigen::Matrix<Scalar, 12, 12>;
   using Matrix6x12 = Eigen::Matrix<Scalar, 6, 12>;
-  using Isometry3 = Eigen::Transform<Scalar, 3, Eigen::Isometry>;
 
   explicit Pose3WithCov(
       const Matrix3& R_in = Matrix3::Identity(),
       const Vector3& p_in = Vector3::Zero(),
       const Matrix6& cov_in = Matrix6::Identity())
       : pose_(R_in, p_in), cov_(cov_in) {}
-
-  explicit Pose3WithCov(
-      const Isometry3& pose, const Matrix6& cov_in = Matrix6::Identity())
-      : pose_(pose.linear(), pose.translation()), cov_(cov_in) {}
 
   explicit Pose3WithCov(
       const Pose& pose, const Matrix6& cov_in = Matrix6::Identity())
@@ -137,12 +132,6 @@ struct Pose3WithCov {
               .template convertPerturbation<SourcePerturbation, Perturbation>();
       cov_ = J * cov * J.transpose();
     }
-  }
-
-  Isometry3 toIsometry() const {
-    Isometry3 ret(rotation().matrix());
-    ret.translation() = translation();
-    return ret;
   }
 
   Pose3WithCov operator*(const Pose3WithCov& rhs) const {

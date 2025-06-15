@@ -28,4 +28,18 @@ void MessageHandler::attachToMessageFlow(
   registerPublishers(msgflow);
 }
 
+void MessageHandler::logToMessageFlow(const std::string& log_str) {
+  if (pub_handler_log_) {
+    auto msg = std::make_shared<std::string>(log_str);
+    pub_handler_log_(msg);
+  }
+}
+
+void MessageHandler::registerPublishers(MessageFlow* msgflow) {
+  if (!pub_handler_log_) {  // Check if already registered
+    pub_handler_log_ = msgflow->registerPublisher<
+        sk4slam_msgflow_topics::MESSAGE_HANDLER_LOG_TOPIC>();
+  }
+}
+
 }  // namespace sk4slam

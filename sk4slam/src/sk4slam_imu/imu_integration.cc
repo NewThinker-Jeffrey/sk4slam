@@ -6,6 +6,8 @@
 
 namespace sk4slam {
 
+using OptimizableRot3d = OptimizableManifold<Rot3d, Rot3d::LeftPerturbation>;
+
 /// @brief  Creates options suitable for IMU Pre-integration.
 ImuIntegration::Options ImuIntegration::Options::PreIntegration() {
   Options options;
@@ -209,79 +211,186 @@ ImuIntegration::State ImuIntegration::retrieveLatestState(
 }
 
 void ImuIntegration::interpolate(
-    double alpha, const State& state0, const State& state1,
+    double t, double t0, double t1, const State& state0,
+    const Eigen::Vector3d& deltaR01, const Eigen::Vector3d& deltaV01,
     State* interpolated) const {
-#define ALLOW_ROTATION_ONLY_INTERPOLATION
-#ifndef ALLOW_ROTATION_ONLY_INTERPOLATION
-  OptimizableState from_state(state0);
-  OptimizableState to_state(state1);
-  *interpolated = from_state + alpha * (to_state - from_state);
-#else
-  const State& from_state = state0;
-  const State& to_state = state1;
-  using OptimizableRot3d = OptimizableManifold<Rot3d, Rot3d::LeftPerturbation>;
-  OptimizableRot3d from_R(from_state.R());
-  OptimizableRot3d to_R(to_state.R());
-  interpolated->R() = from_R + alpha * (to_R - from_R);
+  double dt0 = t - t0;
+  double alpha = dt0 / (t1 - t0);
+
+  interpolated->R() = OptimizableRot3d(state0.R()) + alpha * deltaR01;
   if (!options_.rotation_only) {
+    interpolated->v() = state0.v() + alpha * deltaV01;
     interpolated->p() =
-        from_state.p() + alpha * (to_state.p() - from_state.p());
-    interpolated->v() =
-        from_state.v() + alpha * (to_state.v() - from_state.v());
-    {
-      // debug
-      OptimizableState from_state(state0);
-      OptimizableState to_state(state1);
-      State state2 = from_state + alpha * (to_state - from_state);
-      ASSERT(interpolated->isApprox(state2));
+        state0.p() + 0.5 * dt0 * (state0.p() + interpolated->v());
+  }
+}
+
+void ImuIntegration::interpolate(
+    double t, double t0, double t1, const State& state0, const State& state1,
+    State* interpolated, Eigen::Vector3d* out_deltaR01,
+    Eigen::Vector3d* out_deltaV01) const {
+  OptimizableRot3d from_R(state0.R());
+  OptimizableRot3d to_R(state1.R());
+
+  Eigen::Vector3d deltaR01, deltaV01;
+  deltaR01 = (to_R - from_R);
+  if (out_deltaR01) {
+    *out_deltaR01 = deltaR01;
+  }
+
+  if (!options_.rotation_only) {
+    deltaV01 = state1.v() - state0.v();
+    if (out_deltaV01) {
+      *out_deltaV01 = deltaV01;
     }
   }
-#endif
+
+  interpolate(t, t0, t1, state0, deltaR01, deltaV01, interpolated);
+}
+
+struct ImuIntegration::DeltaToNext {
+  State state;
+  Eigen::Vector3d deltaR_to_next;
+  Eigen::Vector3d deltaV_to_next;
+};
+
+bool ImuIntegration::retrieveState(
+    int begin_idx, const Timestamp& timestamp, State* state, bool apply_gravity,
+    double gravity_magnitude, const Vector3d& gravity_direction_in_ref,
+    std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>>* cached_deltas)
+    const {
+  if (timestamps_[begin_idx] == timestamp) {
+    *state = results_[begin_idx].state;
+    if (apply_gravity) {
+      applyGravity(
+          timestamp, gravity_magnitude * gravity_direction_in_ref, state);
+    }
+    return true;
+  } else if (begin_idx == 0) {
+    // The timestamp is before the first cached timestamp
+    return false;
+  } else if (begin_idx >= timestamps_.size()) {
+    // The timestamp is after the last cached timestamp
+    return false;
+  } else {
+    ASSERT(begin_idx > 0 && begin_idx < timestamps_.size());
+    double t0 = timestamps_[begin_idx - 1];
+    double t1 = timestamps_[begin_idx];
+
+    // If we have already computed the delta between these two timestamps,
+    // we can use it to speed up the interpolation
+    if (cached_deltas) {
+      auto it = cached_deltas->find(t0);
+      if (it != cached_deltas->end()) {
+        const auto& state0 = it->second->state;
+        interpolate(
+            timestamp, t0, t1, state0, it->second->deltaR_to_next,
+            it->second->deltaV_to_next, state);
+        return true;
+      }
+    }
+
+    // Otherwise, we need to compute the delta between these two timestamps
+    State state0 = results_[begin_idx - 1].state;
+    State state1 = results_[begin_idx].state;
+    if (!options_.rotation_only && apply_gravity) {
+      Vector3d gravity = gravity_magnitude * gravity_direction_in_ref;
+      applyGravity(t0, gravity, &state0);
+      applyGravity(t1, gravity, &state1);
+    }
+
+    // Interpolate between the two closest timestamps
+    Eigen::Vector3d deltaR01;
+    Eigen::Vector3d deltaV01;
+    interpolate(timestamp, t0, t1, state0, state1, state, &deltaR01, &deltaV01);
+    if (cached_deltas) {
+      // Cache the delta between these two timestamps
+      cached_deltas->emplace(
+          t0, std::make_shared<DeltaToNext>(
+                  DeltaToNext{state0, deltaR01, deltaV01}));
+    }
+
+    return true;
+  }
 }
 
 bool ImuIntegration::retrieveState(
     const Timestamp& timestamp, State* state, bool apply_gravity,
     double gravity_magnitude, const Vector3d& gravity_direction_in_ref) const {
+  // // Test retrieveStates() (with multiple timestamps)
+  // auto states = retrieveStates(
+  //     {timestamp}, apply_gravity,  //
+  //     gravity_magnitude, gravity_direction_in_ref);
+  // if (states.size() == 1) {
+  //   *state = states.begin()->second;
+  //   return true;
+  // } else {
+  //   return false;
+  // }
+
   auto search_res = binarySearchLowerBound(timestamps_, timestamp);
   if (search_res) {
-    if (timestamps_[*search_res] == timestamp) {
-      *state = results_[*search_res].state;
-      if (apply_gravity) {
-        applyGravity(
-            timestamp, gravity_magnitude * gravity_direction_in_ref, state);
-      }
-      return true;
-    } else if (*search_res == 0) {
-      // The timestamp is before the first cached timestamp
-      return false;
-    } else if (*search_res >= timestamps_.size()) {
-      // The timestamp is after the last cached timestamp
-      return false;
-    } else {
-      ASSERT(*search_res > 0 && *search_res < timestamps_.size());
-      double alpha = (timestamp - timestamps_[*search_res - 1]) /
-                     (timestamps_[*search_res] - timestamps_[*search_res - 1]);
-      State state0 = results_[*search_res - 1].state;
-      State state1 = results_[*search_res].state;
-      if (!options_.rotation_only && apply_gravity) {
-        Vector3d gravity = gravity_magnitude * gravity_direction_in_ref;
-        applyGravity(timestamps_[*search_res - 1], gravity, &state0);
-        applyGravity(timestamps_[*search_res], gravity, &state1);
-      }
-
-      // Interpolate between the two closest timestamps
-      interpolate(alpha, state0, state1, state);
-      return true;
-    }
+    int begin_idx = *search_res;
+    return retrieveState(
+        begin_idx, timestamp, state, apply_gravity, gravity_magnitude,
+        gravity_direction_in_ref);
   } else {
     return false;
   }
 }
 
+std::unordered_map<ImuIntegration::Timestamp, ImuIntegration::State>
+ImuIntegration::retrieveStates(
+    const std::vector<Timestamp>& timestamps, bool apply_gravity,
+    double gravity_magnitude, const Vector3d& gravity_direction_in_ref) const {
+  if (timestamps.empty()) {
+    return {};
+  }
+
+  std::unordered_map<Timestamp, State> states;
+  states.rehash(2 * timestamps.size());
+  std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>> cached_deltas;
+
+  // Find the search range
+  auto [it_min, it_max] =
+      std::minmax_element(timestamps.begin(), timestamps.end());
+  int begin_idx = 0, end_idx = timestamps_.size();
+  {
+    auto r0 = binarySearchLowerBound(timestamps_, *it_min);
+    if (r0) {
+      begin_idx = *r0;
+    }
+    auto r1 = binarySearchUpperBound(timestamps_, *it_max);
+    if (r1) {
+      end_idx = *r1;
+    }
+  }
+  auto it_begin = timestamps_.begin() + begin_idx;
+  auto it_end = timestamps_.begin() + end_idx;
+
+  // Iterate over all queried timestamps
+  for (const auto& timestamp : timestamps) {
+    if (states.count(timestamp)) {
+      continue;
+    }
+    State state;
+    auto search_res = binarySearchLowerBound(it_begin, it_end, timestamp);
+    if (search_res) {
+      int begin_idx = *search_res - timestamps_.begin();
+      if (retrieveState(
+              begin_idx, timestamp, &state, apply_gravity, gravity_magnitude,
+              gravity_direction_in_ref, &cached_deltas)) {
+        states[timestamp] = state;
+      }
+    }
+  }
+  return states;
+}
+
 const ImuIntegration::Result* ImuIntegration::findResult(
     const Timestamp& timestamp) const {
   auto search_res = binarySearchFirst(timestamps_, timestamp);
-  if (search_res) {
+  if (!search_res) {
     return nullptr;
   } else {
     return &results_[*search_res];

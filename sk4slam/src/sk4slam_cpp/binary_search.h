@@ -432,7 +432,7 @@ binary_search_internal::IterReturnType<Mode, Iterator> binarySearch(
   Iterator left = begin;
   Iterator right = end;
 
-  while (left < right) {
+  while (left != right) {
     Iterator mid = traits::advance(left, traits::distance(left, right) / 2);
     if (cmp(key_func(traits::get(mid)), target)) {
       left = traits::advance(mid, 1);

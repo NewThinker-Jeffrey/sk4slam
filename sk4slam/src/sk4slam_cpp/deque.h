@@ -678,6 +678,15 @@ class Deque {
   /// @param pos A const_iterator pointing to the element to be removed.
   /// @return An iterator pointing to the element following the erased element.
   iterator erase(const_iterator pos) {
+    // First handle the special cases of removing the front or back element
+    if (pos == begin()) {
+      pop_front();
+      return begin();  // Return iterator to the new front element
+    } else if (pos == end() - 1) {
+      pop_back();
+      return end();  // Return iterator to the end of the deque.
+    }
+
     std::size_t index = pos - begin();  // Get the logical index of the element
 
     if (index >= size()) {
@@ -689,8 +698,8 @@ class Deque {
       T* current = get_element_ptr(i);
       T* next = get_element_ptr(i + 1);
       current->~T();  // Destroy the current element
-      new (current)
-          T(*next);  // Move the next element into the current position
+      new (current) T(
+          std::move(*next));  // Move the next element into the current position
     }
 
     // Destroy the last element
@@ -708,6 +717,21 @@ class Deque {
   /// @return An iterator pointing to the element following the last erased
   /// element.
   iterator erase(const_iterator first, const_iterator last) {
+    // First handle the special cases of removing from the front or back
+    if (first == begin()) {
+      std::size_t num_elements_to_remove = last - first;
+      while (num_elements_to_remove--) {
+        pop_front();
+      }
+      return begin();  // Return iterator to the new front element
+    } else if (last == end()) {
+      std::size_t num_elements_to_remove = last - first;
+      while (num_elements_to_remove--) {
+        pop_back();
+      }
+      return end();  // Return iterator to the end of the deque.
+    }
+
     std::size_t start_index = first - begin();
     std::size_t end_index = last - begin();
 
@@ -723,8 +747,8 @@ class Deque {
       T* current = get_element_ptr(i);
       T* next = get_element_ptr(i + num_elements_to_remove);
       current->~T();  // Destroy the current element
-      new (current)
-          T(*next);  // Move the next element into the current position
+      new (current) T(
+          std::move(*next));  // Move the next element into the current position
     }
 
     // Destroy the remaining elements
