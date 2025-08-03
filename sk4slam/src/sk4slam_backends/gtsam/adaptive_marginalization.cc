@@ -331,9 +331,11 @@ double AdaptiveMarginalization::evaluateLinearizationError(
     error = max_delta / cur_threshold;
     if (debug_) {
       LOGI(
-          "AdaptiveMarginalization: %s linearization error of key %s: %f",
+          "AdaptiveMarginalization: %s linearization error of key %s: %f "
+          "(max_delta=%f, cur_threshold=%f)",
           is_linearization_point_fixed ? "Fixed" : "Non-fixed",
-          gtsam::DefaultKeyFormatter(key).c_str(), error);
+          gtsam::DefaultKeyFormatter(key).c_str(), error, max_delta,
+          cur_threshold);
     }
   } else if (std::holds_alternative<ThresholdByVarType>(threshold)) {
     // Find the threshold for this variable type

@@ -33,6 +33,10 @@ TEST(PnPTest, P3P) {
   checkPose(poses[best_i], real_T_C_Obj);
 }
 
+// TODO(jeffrey): @2025.08.01  This test gets unstable when we
+// run it on ubuntu 22.04 (built with clang 14 + ros2-humble colcon) for unknown
+// reason.  However it works fine on ubuntu 20.04 (built with clang 10 +
+// ros1-noetic catkin).
 TEST(PnPTest, EPNP_4Points) {
   Eigen::Isometry3d real_T_C_Obj;
   int n = 4;

@@ -207,7 +207,7 @@ bool EssentialMatrix::check_H_Degenerate(
 
   LOGA(
       BLUE "EssentialMatrix::check_H_Degenerate(): errs = %s" RESET,
-      toStr(errs, sqrt).c_str());
+      toStr(errs, std::sqrt<double>).c_str());
   LOGA(
       BLUE "EssentialMatrix::check_H_Degenerate(): inliers ids = %s" RESET,
       toStr(is).c_str());

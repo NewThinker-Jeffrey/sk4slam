@@ -147,6 +147,12 @@ void IncrementalSmoother::printSymbolicBayesTree(
   }
 }
 
+gtsam::JointMarginal IncrementalSmoother::jointMarginalCovariance(
+    const KeyVector& variables) const {
+  gtsam::Marginals marginals(getFactors(), getISAM2().getLinearizationPoint());
+  return marginals.jointMarginalCovariance(variables);
+}
+
 IncrementalSmoother::VariableOrderingConstraints
 IncrementalSmoother::createOrderingConstraints(
     const NonlinearFactorGraph& new_factors, const Values& new_theta,
@@ -376,9 +382,16 @@ std::unique_ptr<const IncrementalSmoother::Result> IncrementalSmoother::update(
   std::swap(constrained_keys_, constrained_keys);
   converged_ = false;
   try {
-    isam_result_ = isam_.update(
+    // isam_result_ = isam_.update(
+    //     new_factors, new_theta, factors_to_remove, constrained_keys_,
+    //     cached_no_relinear_keys_, additional_marked_keys);
+
+    // Test ISAM2 copy
+    ISAM2 isam_copy = isam_;
+    isam_result_ = isam_copy.update(
         new_factors, new_theta, factors_to_remove, constrained_keys_,
         cached_no_relinear_keys_, additional_marked_keys);
+    isam_ = isam_copy;
   } catch (...) {
     const auto& variableIndex = isam_.getVariableIndex();
     if (constrained_keys_.size() > 0) {

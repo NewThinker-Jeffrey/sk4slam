@@ -175,10 +175,13 @@
       .def("normalized", &SO3d::normalized)                                 \
       .def(                                                                 \
           "toQuaternion",                                                   \
-          [](const SO3d& g) { return Eigen::Quaterniond(g.matrix()); })     \
+          [](const SO3d& g) {                                               \
+            const auto& c = Eigen::Quaterniond(g.matrix()).coeffs();        \
+            return Eigen::Vector4d(c[3], c[0], c[1], c[2]);                 \
+          })                                                                \
       .def_static("FromTwoUnitVectors", &SO3d::FromTwoUnitVectors)          \
       .def_static(                                                          \
-          "FromQaternion",                                                  \
+          "FromQuaternion",                                                 \
           [](double w, double x, double y, double z) {                      \
             return SO3d(Eigen::Quaterniond(w, x, y, z).toRotationMatrix()); \
           })                                                                \

@@ -233,7 +233,7 @@ bool FundamentalMatrix::check_H_Degenerate(
     }
     LOGA(
         BLUE "FundamentalMatrix::check_H_Degenerate(): errs = %s" RESET,
-        toStr(errs, sqrt).c_str());
+        toStr(errs, std::sqrt<double>).c_str());
     LOGA(
         BLUE
         "FundamentalMatrix::check_H_Degenerate(): inliers "

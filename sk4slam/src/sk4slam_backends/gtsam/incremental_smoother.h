@@ -2,6 +2,7 @@
 
 #include <gtsam/inference/Key.h>
 #include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <memory>
@@ -188,6 +189,10 @@ class IncrementalSmoother {
   Matrix marginalCovariance(Key key) const {
     return isam_.marginalCovariance(key);
   }
+
+  /// Compute the joint marginal covariance of several variables
+  gtsam::JointMarginal jointMarginalCovariance(
+      const KeyVector& variables) const;
 
   /// Get results of isam2 in the last update() call.
   const ISAM2Result& getISAM2Result() const {
