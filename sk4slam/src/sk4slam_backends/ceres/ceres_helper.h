@@ -507,53 +507,73 @@ class CeresProblem : public ceres::Problem {
   }
 
   friend class CeresManifoldBlockInterface;
-  friend class CeresUpdateManifoldBlocksEvaluationCallback;
+  friend class ManifoldEvaluationCallback;
   friend ceres::TerminationType CeresSolve(
       const ceres::Solver::Options&, CeresProblem*, ceres::Solver::Summary*,
       bool);
   std::unordered_set<CeresManifoldBlockInterface*> local_parameter_blocks_;
 
  public:
+  class ManifoldEvaluationCallback : public ceres::EvaluationCallback {
+   public:
+    virtual ~ManifoldEvaluationCallback() {}
+    ManifoldEvaluationCallback(
+        CeresProblem* problem, ceres::EvaluationCallback* other = nullptr)
+        : problem_(problem), other_(other) {}
+
+    // Called before Ceres requests residuals or jacobians for a given setting
+    // of
+    // the parameters. User parameters (the double* values provided to the cost
+    // functions) are fixed until the next call to PrepareForEvaluation(). If
+    // new_evaluation_point == true, then this is a new point that is different
+    // from the last evaluated point. Otherwise, it is the same point that was
+    // evaluated previously (either jacobian or residual) and the user can use
+    // cached results from previous evaluations.
+    virtual void PrepareForEvaluation(
+        bool evaluate_jacobians, bool new_evaluation_point) {
+      // LOGA(
+      //     "EVA ManifoldEvaluationCallback: "
+      //     " (evaluate_jacobians, new_evaluation_point) = (%d, %d)",
+      //     evaluate_jacobians, new_evaluation_point);
+      problem_->PrepareForEvaluation(evaluate_jacobians, new_evaluation_point);
+      if (other_) {
+        other_->PrepareForEvaluation(evaluate_jacobians, new_evaluation_point);
+      }
+    }
+
+   private:
+    CeresProblem* problem_;
+    ceres::EvaluationCallback* other_;
+  };
+
+ public:
+#if CERES_VERSION_MAJOR >= 2
+  // Ceres 2.x and later: evaluation_callback is moved to Problem::options().
+  // We need to override the evaluation_callback before constructing the
+  // Problem.
+  explicit CeresProblem(const Options& options = Options())
+      : eva_callback_(this, options.evaluation_callback),
+        Base(overrideEvaluationCallback(options, &eva_callback_)) {}
+
+ private:
+  ManifoldEvaluationCallback eva_callback_;
+  static Options overrideEvaluationCallback(
+      const Options& options, ManifoldEvaluationCallback* new_eva_cb) {
+    Options new_options = options;
+    new_options.evaluation_callback = new_eva_cb;
+    return new_options;
+  }
+#else
+  // Ceres 1.x: still uses Solver::Options::evaluation_callback.
+  // We don't need to adapt the constructor.
   using Base::Base;
+#endif
 };
 
 inline void CeresManifoldBlockInterface::BindCeresProblem(
     CeresProblem* problem) {
   problem->RegisterManifoldBlock(this);
 }
-
-class CeresUpdateManifoldBlocksEvaluationCallback
-    : public ceres::EvaluationCallback {
- public:
-  virtual ~CeresUpdateManifoldBlocksEvaluationCallback() {}
-  CeresUpdateManifoldBlocksEvaluationCallback(
-      CeresProblem* problem, ceres::EvaluationCallback* other = nullptr)
-      : problem_(problem), other_(other) {}
-
-  // Called before Ceres requests residuals or jacobians for a given setting
-  // of
-  // the parameters. User parameters (the double* values provided to the cost
-  // functions) are fixed until the next call to PrepareForEvaluation(). If
-  // new_evaluation_point == true, then this is a new point that is different
-  // from the last evaluated point. Otherwise, it is the same point that was
-  // evaluated previously (either jacobian or residual) and the user can use
-  // cached results from previous evaluations.
-  virtual void PrepareForEvaluation(
-      bool evaluate_jacobians, bool new_evaluation_point) {
-    // LOGA(
-    //     "EVA CeresUpdateManifoldBlocksEvaluationCallback: "
-    //     " (evaluate_jacobians, new_evaluation_point) = (%d, %d)",
-    //     evaluate_jacobians, new_evaluation_point);
-    problem_->PrepareForEvaluation(evaluate_jacobians, new_evaluation_point);
-    if (other_) {
-      other_->PrepareForEvaluation(evaluate_jacobians, new_evaluation_point);
-    }
-  }
-
- private:
-  CeresProblem* problem_;
-  ceres::EvaluationCallback* other_;
-};
 
 class CeresIterationRecordCallback : public ceres::IterationCallback {
  public:
@@ -629,9 +649,15 @@ inline ceres::TerminationType CeresSolve(
     local_options.logging_type = ceres::SILENT;
   }
 
-  CeresUpdateManifoldBlocksEvaluationCallback eva_callback(
+#if CERES_VERSION_MAJOR >= 2
+  // Ceres 2.x and later: set evaluation_callback via Problem::options()
+  // Nothing to do here.
+#else
+  // Ceres 1.x: still uses Solver::Options::evaluation_callback
+  CeresProblem::ManifoldEvaluationCallback eva_callback(
       problem, local_options.evaluation_callback);
   local_options.evaluation_callback = &eva_callback;
+#endif
 
   ceres::Solve(local_options, problem, summary);
   problem->FinalUpdateManifoldBlocks();

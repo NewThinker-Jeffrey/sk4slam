@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<package format="2">
+<package format="3">
   <name>sk4slam</name>
   <version>0.0.0</version>
   <description>
@@ -9,32 +9,37 @@
   <author>Jeffrey</author>
   <license>New BSD</license>
 
-  <!-- for ros1 build -->
-  <buildtool_depend>catkin</buildtool_depend>
+  <!-- Build tools -->
+  <buildtool_depend>git</buildtool_depend>
+  <buildtool_depend condition="$SK4SLAM_ROS_BUILDTOOL == 1">catkin</buildtool_depend>
+  <buildtool_depend condition="$SK4SLAM_ROS_BUILDTOOL == 2">ament_cmake</buildtool_depend>
+  <!-- If SK4SLAM_ROS_BUILDTOOL is not set, use CMake as default -->
+  <buildtool_depend condition="$SK4SLAM_ROS_BUILDTOOL == ''">cmake</buildtool_depend>
 
-  <!-- for no ros build -->
-  <!-- <buildtool_depend>cmake</buildtool_depend> -->
+  <!-- Dependencies required only for building -->
+  <build_depend>eigen</build_depend>
 
-  <build_depend>git</build_depend>
-
-  <!-- only for unit test -->
-  <build_depend>google-mock</build_depend>
-  <build_depend>gtest</build_depend>
-  <depend>libgflags-dev</depend>
-  <depend>libgoogle-glog-dev</depend>
-
-  <!-- dependencies -->
-  <depend>eigen</depend>
+  <!-- Dependencies -->
   <depend>gtsam</depend>
-  <depend>libceres-dev</depend>
-  <depend>libopencv-dev</depend>
-  <depend>libyaml-cpp-dev</depend>
-  <export>
-    <!-- for ros1 build -->
-    <build_type>catkin</build_type>
-    <rosdoc config="rosdoc.yaml" />
+  <depend>ceres-solver</depend>
+  <depend>opencv</depend>
+  <depend>yaml-cpp</depend>
 
-    <!-- for no ros build -->
-    <!-- <build_type>cmake</build_type> -->
+  <!-- Test dependencies -->
+  <test_depend>google-mock</test_depend>
+  <test_depend>gtest</test_depend>
+  <test_depend condition="$SK4SLAM_ROS_BUILDTOOL == 2">ament_cmake_gtest</test_depend>
+  <test_depend>gflags</test_depend>
+  <test_depend>glog</test_depend>
+
+  <export>
+    <!-- ROS1 build type -->
+    <build_type condition="$SK4SLAM_ROS_BUILDTOOL == 1">catkin</build_type>
+    <!-- ROS2 build type -->
+    <build_type condition="$SK4SLAM_ROS_BUILDTOOL == 2">ament_cmake</build_type>
+    <!-- Non-ROS build type (fallback if SK4SLAM_ROS_BUILDTOOL is not set) -->
+    <build_type condition="$SK4SLAM_ROS_BUILDTOOL == ''">cmake</build_type>
+
+    <rosdoc config="rosdoc.yaml" />
   </export>
 </package>

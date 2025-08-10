@@ -73,17 +73,16 @@ This repository primarily contains the following packages:
 ### Prepare workspace and code
 
 ```
-mkdir catkin_ws
-cd catkin_ws
+mkdir sk4slam_ws
+cd sk4slam_ws
 mkdir src
 cd src
 
-# catkin_simple
-git clone https://github.com/catkin/catkin_simple.git
+# gtsam
+git clone -b jeffrey/develop https://github.com/NewThinker-Jeffrey/gtsam.git
 
 # sk4slam
 git clone --recursive https://github.com/NewThinker-Jeffrey/sk4slam.git
-# git clone --recursive git@github.com:NewThinker-Jeffrey/sk4slam.git
 ```
 
 ### Setup the linter
@@ -106,7 +105,7 @@ For Ubuntu: (Compatible with ```clang-format-3.8 - 6.0```)
 
 Initialize linter for the repo:
 ```
-cd catkin_ws/src/sk4slam
+cd sk4slam_ws/src/sk4slam
 python3 tools/linter/bin/init_linter_git_hooks
 ```
 
@@ -116,34 +115,112 @@ Add the following in your "~/.bashrc" (or other file matching for your shell). O
 . tools/linter/setup_linter.sh
 ```
 
-### Install catkin_tools
+### Build with ROS1 buildtools (catkin)
+
+Install catkin_tools if not installed yet:
 
 https://catkin-tools.readthedocs.io/en/latest/installing.html
 
-### Build
 
 Initialize the worksapce (for the first time):
 
 ```
-cd catkin_ws
+cd sk4slam_ws
 catkin init
+catkin config --merge-devel # Necessary for catkin_tools >= 0.4.
+catkin config --extend /opt/ros/$ROS_DISTRO
 ```
 
 Build
 ```
-catkin build <target_packge_name>
+export SK4SLAM_ROS_BUILDTOOL=1  # Use catkin build tools.
+
+catkin build $@ --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_BUILD_UNSTABLE=ON \
+    -DGTSAM_BUILD_TESTS=ON \
+    -DGTSAM_ENABLE_DEBUG=ON \
+    -DCMAKE_CXX_FLAGS="-Werror=return-type -Werror=thread-safety"
+
+catkin build sk4slam
 ```
 
-### Run UT
-
-To build & run a catkin test for a specific catkin package:
+Run UT: To build & run unit tests for a specific package:
 ```
 catkin run_tests --no-dep <package_name> 
 ```
 
-To run a catkin test for a specific catkin package, from a directory within that package:
+For more information: https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_test.html
+
+
+### Build with ROS2 buildtools (colcon)
+
+
+Build
+
 ```
-catkin run_tests --no-dep --this
+export SK4SLAM_ROS_BUILDTOOL=2  # Use colcon build tools.
+
+colcon build \
+    --parallel-workers 1 \
+    --merge-install \
+    --symlink-install \
+    --cmake-force-configure \
+    --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_BUILD_UNSTABLE=ON \
+    -DGTSAM_BUILD_TESTS=ON \
+    -DGTSAM_ENABLE_DEBUG=ON \
+    -DCMAKE_CXX_FLAGS="-Werror=return-type -Werror=thread-safety" \
+    --packages-up-to sk4slam
 ```
 
-For more information: https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_test.html
+
+Run UT: To build & run unit tests for a specific package:
+```
+colcon test \
+    --merge-install \
+    --event-handlers console_direct+ \
+    --packages-select $@
+```
+
+
+### Build without ROS buildtools (cmake)
+
+Build
+
+```
+unset SK4SLAM_ROS_BUILDTOOL  # Use cmake build tools.
+
+cd sk4slam_ws
+mkdir build install
+
+export CMAKE_PREFIX_PATH=$(pwd)/install
+
+export DEFAULT_CMKAE_ARGS="\
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_BUILD_UNSTABLE=ON \
+    -DGTSAM_BUILD_TESTS=ON \
+    -DGTSAM_ENABLE_DEBUG=ON"
+
+# Build and install gtsam first
+cmake -S ./src/gtsam -B build/gtsam \
+    ${DEFAULT_CMKAE_ARGS}
+cmake --build build/gtsam
+cmake --install build/gtsam --prefix $(pwd)/install
+
+# Build and install sk4slam
+cmake -S ./src/sk4slam -B build/sk4slam \
+    ${DEFAULT_CMKAE_ARGS}
+cmake --build build/sk4slam
+cmake --install build/sk4slam --prefix $(pwd)/install
+```

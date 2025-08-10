@@ -216,17 +216,17 @@ struct Configurable {
 // doesn't exist in the config, exception is thrown.
 
 #define CONFIG_LOAD  (config, variable)   \
-    (variable) = (config).get <decltype(variable)>(#variable)
+    (variable) = (config).template get <decltype(variable)>(#variable)
 #define CONFIG_LOAD_A(config, variable)   \
-    (variable) = (config).getA<decltype(variable)>(#variable)
+    (variable) = (config).template getA<decltype(variable)>(#variable)
 #define CONFIG_LOAD_D(config, variable)   \
-    (variable) = (config).getD<decltype(variable)>(#variable)
+    (variable) = (config).template getD<decltype(variable)>(#variable)
 #define CONFIG_LOAD_I(config, variable)   \
-    (variable) = (config).getI<decltype(variable)>(#variable)
+    (variable) = (config).template getI<decltype(variable)>(#variable)
 #define CONFIG_LOAD_W(config, variable)   \
-    (variable) = (config).getW<decltype(variable)>(#variable)
+    (variable) = (config).template getW<decltype(variable)>(#variable)
 #define CONFIG_LOAD_E(config, variable)   \
-    (variable) = (config).getE<decltype(variable)>(#variable)
+    (variable) = (config).template getE<decltype(variable)>(#variable)
 
 
 // Macros used to update the value of a variable if it exists in the config.
