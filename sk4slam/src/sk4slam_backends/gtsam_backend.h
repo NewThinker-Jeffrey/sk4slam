@@ -284,6 +284,7 @@ class ISAM2BackendCommon : private GtsamBackend {
   using GtsamBackend::toVariableKey;
   // using GtsamBackend::hasVariable;
   using GtsamBackend::debug_;
+  using GtsamBackend::hasFixedVariable;
 
   ISAM2BackendCommon() : GtsamBackend(false) {}
 
@@ -554,7 +555,7 @@ class ISAM2BackendCommon : private GtsamBackend {
       }
       ASSERT(checked_removed_factors.size() == remove_factor_indices.size());
       if (debug_) {
-        LOGI(
+        LOGD(
             "GtsamBackend.ISAM2: Removed %d factors from isam, indices: %s",
             checked_removed_factors.size(),
             toStr(checked_removed_factors).c_str());
@@ -582,7 +583,7 @@ class ISAM2BackendCommon : private GtsamBackend {
       }
       ASSERT(checked_new_factors.size() == new_factor_indices.size());
       if (debug_) {
-        LOGI(
+        LOGD(
             "GtsamBackend.ISAM2: Added %d new factors to isam, indices: %s",
             checked_new_factors.size(), toStr(checked_new_factors).c_str());
       }
@@ -633,7 +634,7 @@ class ISAM2BackendCommon : private GtsamBackend {
           checked_marginalized_factors.size() ==
           marginalized_factor_indices.size());
       if (debug_) {
-        LOGI(
+        LOGD(
             "GtsamBackend.ISAM2: Marginalized %d factors from isam, indices: "
             "%s",
             checked_marginalized_factors.size(),
@@ -657,7 +658,7 @@ class ISAM2BackendCommon : private GtsamBackend {
       }
       ASSERT(checked_marginal_factors.size() == marginal_factor_indices.size());
       if (debug_) {
-        LOGI(
+        LOGD(
             "GtsamBackend.ISAM2: Added %d marginal factors to isam, indices: "
             "%s",
             checked_marginal_factors.size(),
@@ -679,7 +680,7 @@ class ISAM2BackendCommon : private GtsamBackend {
       std::set<Key> ordered_keys(
           marginalized_keys.begin(), marginalized_keys.end());
       ASSERT(ordered_keys.size() == marginalized_keys.size());
-      LOGI(
+      LOGD(
           "GtsamBackend.ISAM2: Marginalized %d variables from isam, keys: %s",
           marginalized_keys.size(),
           toStr(ordered_keys, [](const Key& backend_key) {
@@ -992,7 +993,7 @@ class IncrementalSmootherBackend : public ISAM2BackendCommon {
       ASSERT(marginal_factors_.insert(factor_id).second);
     }
     if (debug_) {
-      LOGI(
+      LOGD(
           "GtsamBackend.ISAM2: marginal_factors change: removed %d, "
           "marginalized %d, added %d, remaining %d",
           n_removed_marginal, n_marginalized_marginal,
@@ -1104,6 +1105,13 @@ class TemporalSmootherBackend
     return key;
   }
 
+  template <typename Manifold>
+  VariableKey addFixedVariable(
+      gtsam::Key backend_key, const Manifold& initial_value) {
+    return addFixedVariable(
+        kPersistentVariableTime, backend_key, initial_value);
+  }
+
   // template <typename... Args>
   // VariableKey addTemporaryVariable(Timestamp time, Args&&... args) {
   //   VariableKey key = Base::addVariable(std::forward<Args>(args)...);
@@ -1149,7 +1157,7 @@ class TemporalSmootherBackend
       const std::unordered_set<gtsam::Key>& no_relinear_keys,
       TimeCounter* tc) override {
     if (debug_) {
-      LOGI(
+      LOGD(
           "GtsamBackend.TemporalSmoother.update: new_theta.size() = "
           "%d, new_factors.size() = %d",
           new_theta.size(), new_factors.size());
@@ -1361,7 +1369,9 @@ class GtsamBackend::BackendFactor : public FrontendFactor,
                       noise_model ? noise_model
                                   : NoiseHelper::Unit(
                                         frontend(backend).getResidualDim()))
-                : noise_model,
+            : noise_model
+                ? noise_model
+                : NoiseHelper::Unit(frontend(backend).getResidualDim()),
             getOptimizableBackendKeys(backend)) {}
 
   BackendFactor(const BackendFactor&) = delete;

@@ -126,8 +126,7 @@ void Timer::doWork() {
           LOGI(
               "Timer::doWork():  the beginning task changed during waiting. "
               "(the earlier beginning task might be JUST removed, or a new "
-              "task might "
-              "be JUST inserted at the beginnig)");
+              "task might be JUST inserted at the beginnig)");
         }
       }
     }

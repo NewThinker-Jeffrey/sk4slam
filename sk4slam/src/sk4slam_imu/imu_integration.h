@@ -226,6 +226,10 @@ class ImuIntegration {
     return timestamps_.back() - initial_time_;
   }
 
+  const std::vector<Timestamp>& getCachedTimestamps() const {
+    return timestamps_;
+  }
+
   /// @brief  Retrieve the latest integrated state.
   /// @param apply_gravity Whether to apply gravity to the original inertial
   /// reference frame (which makes it a non-inertial reference frame, i.e. an

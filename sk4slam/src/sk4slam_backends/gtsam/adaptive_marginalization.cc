@@ -49,13 +49,16 @@ void AdaptiveMarginalization::warnForPoorLinearization(
       static const char* lin_non_fixed_msg =
           "This may indicate forceful marginalization has been triggered, "
           "Otherwise it might be a bug in the adaptive marginalization!";
-      LOGW(
-          "AdaptiveMarginalization::determineKeysToMarginalize: "
-          "Marginalizing poorly linearized %s key: %s with linearization "
-          "error %f. %s",
-          is_linearization_point_fixed ? "Fixed" : "Non-fixed",
-          gtsam::DefaultKeyFormatter(key).c_str(), error,
-          is_linearization_point_fixed ? lin_fixed_msg : lin_non_fixed_msg);
+      if (debug_) {
+        LOGD(
+            YELLOW
+            "AdaptiveMarginalization::determineKeysToMarginalize: "
+            "Marginalizing poorly linearized %s key: %s with linearization "
+            "error %f. %s" RESET,
+            is_linearization_point_fixed ? "Fixed" : "Non-fixed",
+            gtsam::DefaultKeyFormatter(key).c_str(), error,
+            is_linearization_point_fixed ? lin_fixed_msg : lin_non_fixed_msg);
+      }
       ASSERT(
           is_linearization_point_fixed ||
           forceful_marginalization_keys.count(key));
@@ -127,8 +130,9 @@ AdaptiveMarginalization::determineKeysToMarginalize(
       !needsFurtherMarginalization(
           keys_to_be_marginalized, factors_to_be_marginalized)) {
     LOGD(
+        BLUE
         "AdaptiveMarginalization: Smart marginalization completed. "
-        "Find %d variables and %d factors to marginalize. Keys = %s",
+        "Find %d variables and %d factors to marginalize. Keys = %s" RESET,
         keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
         keys_to_be_marginalized_str().c_str());
     warnForPoorLinearization(keys_to_be_marginalized, force_marginalize_keys);
@@ -137,10 +141,11 @@ AdaptiveMarginalization::determineKeysToMarginalize(
 
   // Step 2: Perform balanced marginalization if smart marginalization is
   // insufficient
-  LOGW(
+  LOGD(
+      YELLOW
       "AdaptiveMarginalization: Smart marginalization insufficient. "
       "Only %d variables and %d factors found. Switching to balanced "
-      "marginalization. Keys = %s",
+      "marginalization. Keys = %s" RESET,
       keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
       keys_to_be_marginalized_str().c_str());
 
@@ -172,9 +177,13 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     }
     if (key_to_factor_indices.find(key) == key_to_factor_indices.end()) {
       // The key was newly added and not yet processed by ISAM2. Skip it.
-      LOGW(
-          "AdaptiveMarginalization: Key %s has not yet been added to ISAM2.",
-          gtsam::DefaultKeyFormatter(key).c_str());
+      if (debug_) {
+        LOGD(
+            YELLOW
+            "AdaptiveMarginalization: Key %s has not yet been added to "
+            "ISAM2." RESET,
+            gtsam::DefaultKeyFormatter(key).c_str());
+      }
       return false;
     }
 
@@ -214,9 +223,10 @@ AdaptiveMarginalization::determineKeysToMarginalize(
   };
 
   if (iterateOverMarginalizableKeys(handle_balanced_key)) {
-    LOGW(
+    LOGD(
+        BLUE
         "AdaptiveMarginalization: Balanced marginalization completed. "
-        "Find %d variables and %d factors to marginalize. Keys = %s",
+        "Find %d variables and %d factors to marginalize. Keys = %s" RESET,
         keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
         keys_to_be_marginalized_str().c_str());
     warnForPoorLinearization(keys_to_be_marginalized, force_marginalize_keys);
@@ -225,10 +235,11 @@ AdaptiveMarginalization::determineKeysToMarginalize(
 
   // Step 3: Perform forceful marginalization if balanced marginalization is
   // insufficient
-  LOGW(
+  LOGD(
+      YELLOW
       "AdaptiveMarginalization: Balanced marginalization insufficient. "
       "Only %d variables and %d factors found. Switching to forceful "
-      "marginalization. Keys = %s",
+      "marginalization. Keys = %s" RESET,
       keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
       keys_to_be_marginalized_str().c_str());
 
@@ -240,11 +251,12 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     const Key& key = top.first;
     const double& marg_error = top.second;
     if (forceful_marginalization_keys.count(key) != 0) {
-      LOGE(
+      LOGD(
+          RED
           "AdaptiveMarginalization: The key %s has been found in the "
           "min-heap twice! This should not happen! It's likely that "
           "the function iterateOverMarginalizableKeys() repeatedly "
-          "visited that key, which is a SOFT BUG!",
+          "visited that key, which is a SOFT BUG!" RESET,
           gtsam::DefaultKeyFormatter(key).c_str());
       // ASSERT(forceful_marginalization_keys.count(key) == 0);
       marginalization_error_min_heap.pop();
@@ -257,10 +269,11 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     keys_to_be_marginalized.insert(key);
     marginalization_error_min_heap.pop();
   }
-  LOGW(
+  LOGD(
+      BLUE
       "AdaptiveMarginalization: Forceful marginalization completed. "
       "Find %d variables and %d factors to marginalize. Last marginalization "
-      "error: %f. Keys = %s",
+      "error: %f. Keys = %s" RESET,
       keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
       last_marg_error, keys_to_be_marginalized_str().c_str());
   warnForPoorLinearization(
@@ -304,7 +317,7 @@ bool AdaptiveMarginalization::needsFurtherMarginalization(
   }
 
   if (debug_) {
-    LOGI(
+    LOGD(
         "AdaptiveMarginalization: needsFurtherMarginalization = %d, "
         "rest_keys = %d, rest_factors = %d, rest_connections = %d",
         needs_marginalization, rest_keys, rest_factors, rest_connections);
@@ -330,7 +343,7 @@ double AdaptiveMarginalization::evaluateLinearizationError(
     double max_delta = delta.lpNorm<Eigen::Infinity>();
     error = max_delta / cur_threshold;
     if (debug_) {
-      LOGI(
+      LOGD(
           "AdaptiveMarginalization: %s linearization error of key %s: %f "
           "(max_delta=%f, cur_threshold=%f)",
           is_linearization_point_fixed ? "Fixed" : "Non-fixed",
@@ -352,7 +365,7 @@ double AdaptiveMarginalization::evaluateLinearizationError(
     }
     error = (delta.array() / cur_threshold.array()).cwiseAbs().maxCoeff();
     if (debug_) {
-      LOGI(
+      LOGD(
           "AdaptiveMarginalization: %s linearization error of key %s: %f",
           is_linearization_point_fixed ? "Fixed" : "Non-fixed",
           gtsam::DefaultKeyFormatter(key).c_str(), error);
@@ -410,7 +423,7 @@ double AdaptiveMarginalization::evaluateMarginalizationError(
   }
 
   if (debug_) {
-    LOGI(
+    LOGD(
         "AdaptiveMarginalization: marginalization error of key %s: %f (from "
         "%s)",
         gtsam::DefaultKeyFormatter(key).c_str(), marg_error,
@@ -494,7 +507,7 @@ double AdaptiveMarginalization::evaluateMarginalizationOverhead(
     overhead += rows * cols * cols;
   }
   if (debug_) {
-    LOGI(
+    LOGD(
         "AdaptiveMarginalization: marginalization overhead of key %s: %f",
         gtsam::DefaultKeyFormatter(key).c_str(), overhead);
   }
@@ -619,8 +632,9 @@ void AdaptiveMarginalization::testLinearizationErrors()
     iterateOverKeysInSubtree(root, f);
   }
   LOGD(
+      BLUE
       "AdptiveMarginalization: testLinearizationErrors: %d variables need "
-      "relinearization",
+      "relinearization" RESET,
       n_relinearize);
 }
 

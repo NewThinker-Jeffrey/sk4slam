@@ -28,10 +28,12 @@ struct TfTransform_ {
     UniqueLock lock(pose_buffer_mutex);
     return pose_buffer->update(time, pose);
   }
-  bool getDynamic(const Timestamp& time, Pose* pose) const
+  bool getDynamic(
+      const Timestamp& time, Pose* pose, const Timestamp& extrapolation_thr = 0,
+      const Timestamp& interpolation_thr = -1) const
       EXCLUDES(pose_buffer_mutex) {
     SharedLock lock(pose_buffer_mutex);
-    return pose_buffer->get(time, pose);
+    return pose_buffer->get(time, pose, extrapolation_thr, interpolation_thr);
   }
   void removeOlderThan(const Timestamp& time) EXCLUDES(pose_buffer_mutex) {
     UniqueLock lock(pose_buffer_mutex);
@@ -250,7 +252,8 @@ class Tf_ {
 
   bool getTransform(
       const FrameId& from_frame_id, const FrameId& to_frame_id,
-      const Timestamp& time, Pose* pose) const {
+      const Timestamp& time, Pose* pose, const Timestamp& extrapolation_thr = 0,
+      const Timestamp& interpolation_thr = -1) const {
     if (!checkFrames(from_frame_id, to_frame_id)) {
       return false;
     }
@@ -262,7 +265,8 @@ class Tf_ {
       return false;
     }
     return getTransform(
-        from_frame_id, to_frame_id, common_ancestor, time, pose);
+        from_frame_id, to_frame_id, common_ancestor, time, pose,
+        extrapolation_thr, interpolation_thr);
   }
 
   void removeOlderThan(const Timestamp& time) {
@@ -349,7 +353,8 @@ class Tf_ {
 
   bool getPoseInAncestorRecursive(
       const FrameId& from_frame_id, const FrameId& ancestor_id,
-      const Timestamp& time, Pose* pose) const {
+      const Timestamp& time, Pose* pose, const Timestamp& extrapolation_thr,
+      const Timestamp& interpolation_thr) const {
     if (from_frame_id == ancestor_id) {
       *pose = Pose::Identity();
       return true;
@@ -365,7 +370,8 @@ class Tf_ {
 
     if (transform->frame_id == ancestor_id) {
       if (transform->is_dynamic) {
-        return transform->getDynamic(time, pose);
+        return transform->getDynamic(
+            time, pose, extrapolation_thr, interpolation_thr);
       } else {
         *pose = transform->pose;
         return true;
@@ -374,7 +380,8 @@ class Tf_ {
 
     Pose pose_in_parent;
     if (transform->is_dynamic) {
-      if (!transform->getDynamic(time, &pose_in_parent)) {
+      if (!transform->getDynamic(
+              time, &pose_in_parent, extrapolation_thr, interpolation_thr)) {
         LOGE(
             "sk4slam::TF: No pose found for frame %s at time %f!",
             toStr(from_frame_id).c_str(), time);
@@ -386,7 +393,8 @@ class Tf_ {
 
     Pose parent_in_ancestor;
     if (!getPoseInAncestorRecursive(
-            transform->frame_id, ancestor_id, time, &parent_in_ancestor)) {
+            transform->frame_id, ancestor_id, time, &parent_in_ancestor,
+            extrapolation_thr, interpolation_thr)) {
       LOGE(
           "sk4slam::TF: No pose found for frame %s at time %f!",
           toStr(transform->frame_id).c_str(), time);
@@ -399,14 +407,18 @@ class Tf_ {
 
   bool getTransform(
       const FrameId& from_frame_id, const FrameId& to_frame_id,
-      const FrameId& common_ancestor, const Timestamp& time, Pose* pose) const {
+      const FrameId& common_ancestor, const Timestamp& time, Pose* pose,
+      const Timestamp& extrapolation_thr = 0,
+      const Timestamp& interpolation_thr = -1) const {
     if (to_frame_id == common_ancestor) {
       return getPoseInAncestorRecursive(
-          from_frame_id, common_ancestor, time, pose);
+          from_frame_id, common_ancestor, time, pose, extrapolation_thr,
+          interpolation_thr);
     } else if (from_frame_id == common_ancestor) {
       Pose to_frame_in_ancestor;
       bool found = getPoseInAncestorRecursive(
-          to_frame_id, common_ancestor, time, &to_frame_in_ancestor);
+          to_frame_id, common_ancestor, time, &to_frame_in_ancestor,
+          extrapolation_thr, interpolation_thr);
       if (!found) {
         LOGE(
             "sk4slam::TF: No pose found for frame %s at time %f!",
@@ -420,7 +432,8 @@ class Tf_ {
       Pose from_frame_in_ancestor;
       Pose to_frame_in_ancestor;
       bool found_from = getPoseInAncestorRecursive(
-          from_frame_id, common_ancestor, time, &from_frame_in_ancestor);
+          from_frame_id, common_ancestor, time, &from_frame_in_ancestor,
+          extrapolation_thr, interpolation_thr);
       if (!found_from) {
         LOGE(
             "sk4slam::TF: No pose found for frame %s at time %f!",
@@ -428,7 +441,8 @@ class Tf_ {
         return false;
       }
       bool found_to = getPoseInAncestorRecursive(
-          to_frame_id, common_ancestor, time, &to_frame_in_ancestor);
+          to_frame_id, common_ancestor, time, &to_frame_in_ancestor,
+          extrapolation_thr, interpolation_thr);
       if (!found_to) {
         LOGE(
             "sk4slam::TF: No pose found for frame %s at time %f!",

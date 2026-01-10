@@ -68,9 +68,10 @@ class Pose3Buf_ {
 
       return true;
     } else {
-      LOGW(
+      LOGD(
           "Pose3Buf_: Ignored update with timestamp older than the latest "
-          "pose.");
+          "pose (%s < %s).",
+          toStr(timestamp).c_str(), toStr(posebuf_.back().timestamp).c_str());
       return false;
     }
   }
@@ -169,9 +170,11 @@ class Pose3Buf_ {
     if (posebuf_.empty() ||
         posebuf_.back().timestamp + extrapolation_thr < timestamp ||
         posebuf_.front().timestamp > timestamp + extrapolation_thr) {
-      LOGW(
+      LOGD(
           "Pose3Buf_: attempt to get with a timestamp out of "
-          "range! ignored.");
+          "range (%s out of [%s, %s])! ignored.",
+          toStr(timestamp).c_str(), toStr(posebuf_.front().timestamp).c_str(),
+          toStr(posebuf_.back().timestamp).c_str());
       return false;
     }
     if (posebuf_.size() == 1) {
@@ -207,7 +210,7 @@ class Pose3Buf_ {
       return {};
     }
     if (posebuf_.empty()) {
-      LOGW("Pose3Buf_: Empty pose buffer! ignored.");
+      LOGD("Pose3Buf_: Empty pose buffer! ignored.");
       return {};
     }
 
@@ -241,9 +244,11 @@ class Pose3Buf_ {
       }
       if (posebuf_.back().timestamp + extrapolation_thr < timestamp ||
           posebuf_.front().timestamp > timestamp + extrapolation_thr) {
-        LOGW(
+        LOGD(
             "Pose3Buf_: attempt to get with a timestamp out of "
-            "range! ignored.");
+            "range (%s out of [%s, %s])! ignored.",
+            toStr(timestamp).c_str(), toStr(posebuf_.front().timestamp).c_str(),
+            toStr(posebuf_.back().timestamp).c_str());
         continue;
       }
       if (posebuf_.size() == 1) {
@@ -316,7 +321,7 @@ class Pose3Buf_ {
         Timestamp dt0 = timestamp - posebuf_[begin_idx - 1].timestamp;
         Timestamp dt1 = posebuf_[begin_idx].timestamp - timestamp;
         if (dt0 > interpolation_thr || dt1 > interpolation_thr) {
-          LOGW(
+          LOGD(
               "Pose3Buf_: attempt to get with a timestamp that is too far "
               "from the closest timestamp! target_time = %s, dt0 = %s, dt1 = "
               "%s.",

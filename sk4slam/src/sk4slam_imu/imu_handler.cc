@@ -22,9 +22,11 @@ double ImuHandler::estimateSamplingRate(const std::vector<ImuData>& data) {
   ASSERT(n >= 2);
 
   if (n < 4) {
-    LOGW(
+    LOGD(
+        YELLOW
         "ImuHandler::estimateSamplingRate(): At least 4 data points are "
-        "required to calculate sampling rate! while only %d points provided.",
+        "required to calculate sampling rate! while only %d points "
+        "provided." RESET,
         n);
     return (n - 1) / (data.back().timestamp - data.front().timestamp);
     // return -1;
@@ -94,26 +96,30 @@ void ImuHandler::runMotionFilter(Segment* segment, double sampling_rate) const {
 
   // Logging for debugging
   if (segment->gyro_exceeds_range) {
-    LOGW(
+    LOGD(
+        YELLOW
         "ImuHandler::runMotionFilter(): Gyro measurements exceed the "
-        "specified range (%f deg/s).",
+        "specified range (%f deg/s)." RESET,
         options_.gyro_range);
   }
   if (segment->accel_exceeds_range) {
-    LOGW(
+    LOGD(
+        YELLOW
         "ImuHandler::runMotionFilter(): Accelerometer measurements exceed "
-        "the specified range (%f g).",
+        "the specified range (%f g)." RESET,
         options_.acc_range);
   }
   if (segment->vibration_status == VibrationStatus::kNoVibration) {
-    LOGI(
-        "ImuHandler::runMotionFilter(): No vibration detected in the IMU "
-        "data.");
+    LOGD(BLUE
+         "ImuHandler::runMotionFilter(): No vibration detected in the IMU "
+         "data." RESET);
   } else if (segment->vibration_status == VibrationStatus::kVibrationDetected) {
-    LOGW("ImuHandler::runMotionFilter(): Vibration detected in the IMU data!");
+    LOGD(YELLOW
+         "ImuHandler::runMotionFilter(): Vibration detected in the IMU "
+         "data!" RESET);
   } else {
-    LOGW(
-        "ImuHandler::runMotionFilter(): Unknown vibration status!",
+    LOGD(
+        RED "ImuHandler::runMotionFilter(): Unknown vibration status!" RESET,
         static_cast<int>(segment->vibration_status));
   }
 }
@@ -129,11 +135,12 @@ void ImuHandler::runPolynomialMotionFilter(
   int polynomial_order = options_.polynomial_order;
   int errors_dof = static_cast<int>(n) - (polynomial_order + 1);
   if (errors_dof <= 0) {
-    LOGW(
+    LOGD(
+        YELLOW
         "ImuHandler::runPolynomialMotionFilter(): A minimum of %d data "
         "points is required to fit a polynomial of order %d, plus at least 1 "
         "additional point to compute residual errors, while only %d data "
-        "points are provided.",
+        "points are provided." RESET,
         polynomial_order + 2, polynomial_order, n);
     segment->vibration_status = VibrationStatus::kUnknown;
 
@@ -150,7 +157,7 @@ void ImuHandler::runPolynomialMotionFilter(
   // Convert continuous-time noise standard deviation to discrete-time
   double discrete_accel_sigma =
       sigmas_.ct_accel_sigma * std::sqrt(sampling_rate);
-  LOGI(
+  LOGD(
       "ImuHandler::runPolynomialMotionFilter(): "
       "DEBUG ct_accel_sigma = %f, discrete_accel_sigma = %f",
       sigmas_.ct_accel_sigma, discrete_accel_sigma);
@@ -201,7 +208,7 @@ void ImuHandler::runPolynomialMotionFilter(
     // Calculate RMSE and maximum absolute error of the normalized residuals
     double rmse = std::sqrt(normalized_residuals.squaredNorm() / errors_dof);
     double max_error = normalized_residuals.cwiseAbs().maxCoeff();
-    LOGI(
+    LOGD(
         "ImuHandler::runPolynomialMotionFilter(): DEBUG Axis %d, rmse = %f, "
         "max_error = %f",
         axis, rmse, max_error);
@@ -224,17 +231,33 @@ void ImuHandler::runPolynomialMotionFilter(
 std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
     const ImuDataBuffer& imu_data_buf, double start_time, double end_time,
     const Eigen::Vector3d& gyro_bias, const Eigen::Vector3d& accel_bias,
-    const Vector3d& gravity_in_start_frame,
-    const Eigen::MatrixXd& bias_cov_6x6) const {
+    const Vector3d& gravity_in_start_frame, const Eigen::MatrixXd& bias_cov_6x6,
+    bool state_only) const {
   auto segment = std::make_shared<Segment>();
   segment->start_time = start_time;
   segment->end_time = end_time;
 
   // Get IMU data between the two time points
   const UniqueId& imu_uid = imu_uid_;
-  ASSERT(imu_data_buf.getLatestImuTime(imu_uid) >= end_time);
+  // ASSERT(imu_data_buf.getLatestImuTime(imu_uid) >= end_time);
+  if (imu_data_buf.getLatestImuTime(imu_uid) < end_time) {
+    LOGD(
+        YELLOW
+        "ImuHandler::processNewSegment(): IMU data after end_time %f (> %f) "
+        "not ready!" RESET,
+        end_time, imu_data_buf.getLatestImuTime(imu_uid));
+    return nullptr;
+  }
   segment->data = imu_data_buf.getImuDataBetween(imu_uid, start_time, end_time);
-  ASSERT(segment->data.size() >= 2);
+  // ASSERT(segment->data.size() >= 2);
+  if (segment->data.size() < 2) {
+    LOGD(
+        YELLOW
+        "ImuHandler::processNewSegment(): IMU data between %f and %f not "
+        "available!" RESET,
+        start_time, end_time);
+    return nullptr;
+  }
 
   // First run the motion filter to correct the IMU data and sigmas
   runMotionFilter(segment.get());
@@ -251,6 +274,9 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
   const ImuSigmas& imu_sigmas = segment->corrected_sigmas;
   auto imu_preint_options = ImuIntegration::Options::PreIntegration();
   imu_preint_options.cache_intermediate_results = true;
+  if (state_only) {
+    imu_preint_options = ImuIntegration::Options::StateBuffer();
+  }
   auto imu_preint = std::make_shared<ImuIntegration>(
       imu_preint_options, imu_sigmas, gyro_bias, accel_bias);
 
@@ -259,9 +285,9 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
   ASSERT(bias_cov_6x6.rows() == bias_cov_6x6.cols());
   ASSERT(bias_cov_6x6.rows() == 0 || bias_cov_6x6.rows() == 6);
   bool is_zero_rotation =
-      (bias_cov_6x6.rows() == 6 && segment->isGyroReliable());
+      (!state_only && bias_cov_6x6.rows() == 6 && segment->isGyroReliable());
   bool is_const_velocity =
-      (bias_cov_6x6.rows() == 6 && segment->isGyroReliable() &&
+      (!state_only && bias_cov_6x6.rows() == 6 && segment->isGyroReliable() &&
        segment->isAccReliable());
 
   // PreIntegrate the IMU data and analyze the motion
@@ -306,10 +332,10 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
 
     ++data_i;
   }
-  LOGI(
+  LOGD(
       "ImuHandler::processNewSegment:  const_velocity_chi2s = %s",
       toStr(const_velocity_chi2s).c_str());
-  LOGI(
+  LOGD(
       "ImuHandler::processNewSegment:  zero_rotation_chi2s = %s",
       toStr(zero_rotation_chi2s).c_str());
 

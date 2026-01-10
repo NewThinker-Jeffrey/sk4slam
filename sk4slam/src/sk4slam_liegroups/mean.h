@@ -472,7 +472,7 @@ class LieGroupSacModel {
             selected_indices, all_points, initial_estimate, &mean,
             weights.get(), max_iterations_, tolerance_);
     if (!success) {
-      LOGI("DEBUG_LIE_RANSAC: Failed to compute mean!!!");
+      LOGD("DEBUG_LIE_RANSAC: Failed to compute mean!!!");
       return std::vector<Parameter>();
     } else {
       return std::vector<Parameter>({mean});

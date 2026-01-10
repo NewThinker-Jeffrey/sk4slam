@@ -187,11 +187,15 @@ class ImuHandler {
   /// @param bias_cov_6x6 Covariance matrix of the IMU biases. If empty, the
   /// flags `is_const_velocity` and `is_zero_rotation` in the returned Segment
   /// will be set to false.
+  /// @param state_only If true, covariance propagation will be skipped, and
+  /// the flags `is_const_velocity` and `is_zero_rotation` in the returned
+  /// Segment will be set to false.
   std::shared_ptr<const Segment> processNewSegment(
       const ImuDataBuffer& imu_data_buf, double start_time, double end_time,
       const Eigen::Vector3d& gyro_bias, const Eigen::Vector3d& accel_bias,
       const Vector3d& gravity_in_start_frame,
-      const Eigen::MatrixXd& bias_cov_6x6 = Eigen::MatrixXd()) const;
+      const Eigen::MatrixXd& bias_cov_6x6 = Eigen::MatrixXd(),
+      bool state_only = false) const;
 
   /// @brief Returns a cached Segment object if it exists.
   std::shared_ptr<const Segment> getCachedSegment(

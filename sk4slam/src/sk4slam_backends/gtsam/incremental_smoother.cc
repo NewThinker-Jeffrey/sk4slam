@@ -84,7 +84,7 @@ void debugMarginalizationReEliminationOverhead(
   std::set<Key> ordered_additional_keys(
       filtered_additional_keys.begin(), filtered_additional_keys.end());
   ASSERT(ordered_additional_keys.size() == filtered_additional_keys.size());
-  LOGI(
+  LOGD(
       "IncrementalSmoother: Additional Keys to Re-Eliminate for "
       "Marginalization [%lu / %lu before-removing-already-affected]: %s",
       ordered_additional_keys.size(), additional_keys.size(),
