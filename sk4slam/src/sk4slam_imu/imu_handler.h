@@ -16,8 +16,8 @@ class ImuHandler {
   /// @brief Configuration options for ImuHandler.
   struct Options {
     std::string motion_filter_method{
-        "polynomial"};  ///< The motion filter method to use.  Values:
-                        ///< "polynomial", "lowpass" ...
+        "none"};  ///< The motion filter method to use.  Values: "none",
+                  ///< "polynomial", "lowpass" ...
 
     int polynomial_order = 1;
     ///< The order of the polynomial used to fit the acceleration data. Only

@@ -70,9 +70,21 @@ class const_iterator {
     return const_iterator(deque, pos + offset);
   }
 
+  /// @brief += operator.
+  const_iterator& operator+=(std::ptrdiff_t offset) {
+    pos += offset;
+    return *this;
+  }
+
   /// @brief Subtracts an offset from the iterator.
   const_iterator operator-(std::ptrdiff_t offset) const {
     return const_iterator(deque, pos - offset);
+  }
+
+  /// @brief -= operator.
+  const_iterator& operator-=(std::ptrdiff_t offset) {
+    pos -= offset;
+    return *this;
   }
 
   /// @brief Computes the distance between two iterators.
@@ -141,9 +153,21 @@ class iterator {
     return iterator(deque, pos + offset);
   }
 
+  /// @brief += operator.
+  iterator& operator+=(std::ptrdiff_t offset) {
+    pos += offset;
+    return *this;
+  }
+
   /// @brief Subtracts an offset from the iterator.
   iterator operator-(std::ptrdiff_t offset) const {
     return iterator(deque, pos - offset);
+  }
+
+  /// @brief -= operator.
+  iterator& operator-=(std::ptrdiff_t offset) {
+    pos -= offset;
+    return *this;
   }
 
   /// @brief Computes the distance between two iterators.

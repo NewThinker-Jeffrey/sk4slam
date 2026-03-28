@@ -37,7 +37,9 @@ struct TfTransform_ {
   }
   void removeOlderThan(const Timestamp& time) EXCLUDES(pose_buffer_mutex) {
     UniqueLock lock(pose_buffer_mutex);
-    pose_buffer->removeOlderThan(time);
+    if (pose_buffer) {
+      pose_buffer->removeOlderThan(time);
+    }
   }
 
   TfTransform_() : is_dynamic(false) {}
@@ -287,6 +289,26 @@ class Tf_ {
     return static_transforms;
   }
 
+  std::vector<const Transform*> getAllTfTransforms() const
+      EXCLUDES(transforms_mutex_) {
+    SharedLock lock(transforms_mutex_);
+    std::vector<const Transform*> ret;
+    for (const auto& pair : transforms_) {
+      ret.push_back(pair.second.get());
+    }
+    return ret;
+  }
+
+  const Transform* getTfTransform(const FrameId& child_frame_id) const
+      EXCLUDES(transforms_mutex_) {
+    SharedLock lock(transforms_mutex_);
+    auto it = transforms_.find(child_frame_id);
+    if (it == transforms_.end()) {
+      return nullptr;
+    }
+    return it->second.get();
+  }
+
  protected:
   bool checkFrames(const FrameId& from_frame_id, const FrameId& to_frame_id)
       const EXCLUDES(transforms_mutex_) {
@@ -484,16 +506,6 @@ class Tf_ {
     return it->second.get();
   }
 
-  const Transform* getTfTransform(const FrameId& child_frame_id) const
-      EXCLUDES(transforms_mutex_) {
-    SharedLock lock(transforms_mutex_);
-    auto it = transforms_.find(child_frame_id);
-    if (it == transforms_.end()) {
-      return nullptr;
-    }
-    return it->second.get();
-  }
-
   std::vector<Transform*> getAllTfTransforms() EXCLUDES(transforms_mutex_) {
     SharedLock lock(transforms_mutex_);
     std::vector<Transform*> ret;
@@ -509,16 +521,6 @@ class Tf_ {
     std::vector<TransformPtr> ret;
     for (const auto& pair : transforms_) {
       ret.push_back(pair.second);
-    }
-    return ret;
-  }
-
-  std::vector<const Transform*> getAllTfTransforms() const
-      EXCLUDES(transforms_mutex_) {
-    SharedLock lock(transforms_mutex_);
-    std::vector<const Transform*> ret;
-    for (const auto& pair : transforms_) {
-      ret.push_back(pair.second.get());
     }
     return ret;
   }

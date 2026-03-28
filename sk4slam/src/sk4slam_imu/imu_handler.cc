@@ -86,12 +86,14 @@ void ImuHandler::runMotionFilter(Segment* segment, double sampling_rate) const {
   } else if (options_.motion_filter_method == "lowpass") {
     runLowPassMotionFilter(segment, sampling_rate);
   } else {
-    LOGE(
-        "ImuHandler::runMotionFilter(): Unknown motion filter method: %s",
-        options_.motion_filter_method.c_str());
     segment->filtered_data = segment->data;
     segment->corrected_sigmas = sigmas_;
     segment->vibration_status = VibrationStatus::kUnknown;
+    if (options_.motion_filter_method != "none") {
+      LOGE(
+          "ImuHandler::runMotionFilter(): Unknown motion filter method: %s",
+          options_.motion_filter_method.c_str());
+    }
   }
 
   // Logging for debugging
