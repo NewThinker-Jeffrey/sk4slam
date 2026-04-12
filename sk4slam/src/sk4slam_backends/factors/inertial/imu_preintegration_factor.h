@@ -54,7 +54,8 @@ class ImuPreIntegrationFactor : public FactorBase<ImuPreIntegrationFactor> {
       double gyro_bias_repropagation_thr = 1e-3,
       double acc_bias_repropagation_thr = 1e-3, double regularization = 0.0,
       bool assume_zero_rotation = false, bool assume_zero_velocity = false,
-      bool assume_constant_velocity = false)
+      bool assume_constant_velocity = false, bool is_vel0_egocentric = false,
+      bool is_vel1_egocentric = false)
       : imu_pre_integration_(std::move(imu_pre_integration)),
         gyro_bias_repropagation_thr_(gyro_bias_repropagation_thr),
         acc_bias_repropagation_thr_(acc_bias_repropagation_thr),
@@ -62,6 +63,8 @@ class ImuPreIntegrationFactor : public FactorBase<ImuPreIntegrationFactor> {
         assume_constant_velocity_(assume_constant_velocity),
         assume_zero_rotation_(assume_zero_rotation),
         assume_zero_velocity_(assume_zero_velocity),
+        is_vel0_egocentric_(is_vel0_egocentric),
+        is_vel1_egocentric_(is_vel1_egocentric),
         Base(variable_keys) {}
 
   static ImuPreIntegrationFactor RotationOnly(
@@ -71,33 +74,32 @@ class ImuPreIntegrationFactor : public FactorBase<ImuPreIntegrationFactor> {
       double regularization = 0.0, bool assume_zero_rotation = false) {
     return ImuPreIntegrationFactor(
         imu_pre_integration,
-        {T_M_I0_key, null_variable /* v_M_I0_key */, bg0_key,
-         null_variable /* ba0_key */, T_M_I1_key,
-         null_variable /* v_M_I1_key */},
+        {T_M_I0_key, null_variable /* v_I0_key */, bg0_key,
+         null_variable /* ba0_key */, T_M_I1_key, null_variable /* v_I1_key */},
         gyro_bias_repropagation_thr, 1.0, regularization, assume_zero_rotation);
   }
 
   /// @brief Evaluate the reprojection error and optionally compute Jacobians.
   /// @param T_M_I0 Pose of the IMU at the start of the integration.
-  /// @param v_M_I0 Velocity of the IMU at the start of the integration.
+  /// @param v_I0 Velocity of the IMU at the start of the integration.
   /// @param bg0 Bias of the gyroscope at the start of the integration.
   /// @param ba0 Bias of the accelerometer at the start of the integration.
   /// @param T_M_I1 Pose of the IMU at the end of the integration.
-  /// @param v_M_I1 Velocity of the IMU at the end of the integration.
+  /// @param v_I1 Velocity of the IMU at the end of the integration.
   /// @param j_T_M_I0 Optional Jacobian for T_M_I0.
-  /// @param j_v_M_I0 Optional Jacobian for v_M_I0.
+  /// @param j_v_I0 Optional Jacobian for v_I0.
   /// @param j_bg0 Optional Jacobian for bg0.
   /// @param j_ba0 Optional Jacobian for ba0.
   /// @param j_T_M_I1 Optional Jacobian for T_M_I1.
-  /// @param j_v_M_I1 Optional Jacobian for v_M_I1.
+  /// @param j_v_I1 Optional Jacobian for v_I1.
   /// @return The inertial error vector.
   virtual VectorXd evaluateError(
-      const Pose3d& T_M_I0, const Vector3d& v_M_I0, const Vector3d& bg0,
-      const Vector3d& ba0, const Pose3d& T_M_I1, const Vector3d& v_M_I1,
-      JacobianMatrixXd* j_T_M_I0 = nullptr,
-      JacobianMatrixXd* j_v_M_I0 = nullptr, JacobianMatrixXd* j_bg0 = nullptr,
-      JacobianMatrixXd* j_ba0 = nullptr, JacobianMatrixXd* j_T_M_I1 = nullptr,
-      JacobianMatrixXd* j_v_M_I1 = nullptr) const;
+      const Pose3d& T_M_I0, const Vector3d& v_I0, const Vector3d& bg0,
+      const Vector3d& ba0, const Pose3d& T_M_I1, const Vector3d& v_I1,
+      JacobianMatrixXd* j_T_M_I0 = nullptr, JacobianMatrixXd* j_v_I0 = nullptr,
+      JacobianMatrixXd* j_bg0 = nullptr, JacobianMatrixXd* j_ba0 = nullptr,
+      JacobianMatrixXd* j_T_M_I1 = nullptr,
+      JacobianMatrixXd* j_v_I1 = nullptr) const;
 
   int getResidualDim() const override {
     if (isRotationOnly()) {
@@ -131,6 +133,13 @@ class ImuPreIntegrationFactor : public FactorBase<ImuPreIntegrationFactor> {
   bool assume_constant_velocity_;
   bool assume_zero_rotation_;
   bool assume_zero_velocity_;
+
+  bool is_vel0_egocentric_;  ///< If true, the velocity 0 is expressed in the
+                             ///< body frame. Otherwise, it is expressed in the
+                             ///< world frame.
+  bool is_vel1_egocentric_;  ///< If true, the velocity 1 is expressed in the
+                             ///< body frame. Otherwise, it is expressed in the
+                             ///< world frame.
 };
 
 }  // namespace sk4slam

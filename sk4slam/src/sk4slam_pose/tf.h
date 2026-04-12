@@ -194,8 +194,9 @@ class Tf_ {
       }
       return success;
     } else {
-      LOGE(
-          "sk4slam::TF: Transform for frame %s is static! Can't add pose!",
+      LOGW(
+          "sk4slam::TF: Transform for frame %s is static! Can't add "
+          "pose!",
           toStr(child_frame_id).c_str());
       return false;
     }
@@ -261,7 +262,7 @@ class Tf_ {
     }
     FrameId common_ancestor;
     if (!findCommonAncestor(from_frame_id, to_frame_id, &common_ancestor)) {
-      LOGE(
+      LOGW(
           "sk4slam::TF: No common ancestor found for frames %s and %s!",
           toStr(from_frame_id).c_str(), toStr(to_frame_id).c_str());
       return false;
@@ -318,7 +319,7 @@ class Tf_ {
       ret = checkFramesInternal(from_frame_id, to_frame_id);
     }
     if (!ret) {
-      LOGE(
+      LOGW(
           "sk4slam::TF: Frame %s or %s not registered!",
           toStr(from_frame_id).c_str(), toStr(to_frame_id).c_str());
     }
@@ -343,6 +344,7 @@ class Tf_ {
 
     SharedLock lock(transforms_mutex_);
     std::unordered_set<FrameId> from_ancestors;
+    from_ancestors.insert(from_frame_id);
     auto it = transforms_.find(from_frame_id);
     while (it != transforms_.end()) {
       const auto& transform = it->second;
@@ -384,7 +386,7 @@ class Tf_ {
 
     auto transform = getTfTransform(from_frame_id);
     if (!transform) {
-      LOGE(
+      LOGW(
           "sk4slam::TF: No transform found for frame %s!",
           toStr(from_frame_id).c_str());
       return false;
@@ -404,8 +406,8 @@ class Tf_ {
     if (transform->is_dynamic) {
       if (!transform->getDynamic(
               time, &pose_in_parent, extrapolation_thr, interpolation_thr)) {
-        LOGE(
-            "sk4slam::TF: No pose found for frame %s at time %f!",
+        LOGD(
+            YELLOW "sk4slam::TF: No pose found for frame %s at time %f!" RESET,
             toStr(from_frame_id).c_str(), time);
         return false;
       }
@@ -417,8 +419,8 @@ class Tf_ {
     if (!getPoseInAncestorRecursive(
             transform->frame_id, ancestor_id, time, &parent_in_ancestor,
             extrapolation_thr, interpolation_thr)) {
-      LOGE(
-          "sk4slam::TF: No pose found for frame %s at time %f!",
+      LOGD(
+          YELLOW "sk4slam::TF: No pose found for frame %s at time %f!" RESET,
           toStr(transform->frame_id).c_str(), time);
       return false;
     }
@@ -442,8 +444,8 @@ class Tf_ {
           to_frame_id, common_ancestor, time, &to_frame_in_ancestor,
           extrapolation_thr, interpolation_thr);
       if (!found) {
-        LOGE(
-            "sk4slam::TF: No pose found for frame %s at time %f!",
+        LOGD(
+            YELLOW "sk4slam::TF: No pose found for frame %s at time %f!" RESET,
             toStr(to_frame_id).c_str(), time);
         return false;
       } else {
@@ -457,8 +459,8 @@ class Tf_ {
           from_frame_id, common_ancestor, time, &from_frame_in_ancestor,
           extrapolation_thr, interpolation_thr);
       if (!found_from) {
-        LOGE(
-            "sk4slam::TF: No pose found for frame %s at time %f!",
+        LOGD(
+            YELLOW "sk4slam::TF: No pose found for frame %s at time %f!" RESET,
             toStr(from_frame_id).c_str(), time);
         return false;
       }
@@ -466,8 +468,8 @@ class Tf_ {
           to_frame_id, common_ancestor, time, &to_frame_in_ancestor,
           extrapolation_thr, interpolation_thr);
       if (!found_to) {
-        LOGE(
-            "sk4slam::TF: No pose found for frame %s at time %f!",
+        LOGD(
+            YELLOW "sk4slam::TF: No pose found for frame %s at time %f!" RESET,
             toStr(to_frame_id).c_str(), time);
         return false;
       }
@@ -597,7 +599,7 @@ class Tf_ {
     FrameId static_common_ancestor;
     if (!findCommonAncestor(
             from_frame_id, to_frame_id, &static_common_ancestor, true)) {
-      LOGE(
+      LOGW(
           "sk4slam::TF: No common ancestor (static) found for frames %s "
           "and %s!",
           toStr(from_frame_id).c_str(), toStr(to_frame_id).c_str());

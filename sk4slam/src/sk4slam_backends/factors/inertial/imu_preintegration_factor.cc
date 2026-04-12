@@ -42,11 +42,32 @@ void ImuPreIntegrationFactor::updateSqrtInfo() const {
 }
 
 VectorXd ImuPreIntegrationFactor::evaluateError(
-    const Pose3d& T_M_I0, const Vector3d& v_M_I0, const Vector3d& bg0,
-    const Vector3d& ba0, const Pose3d& T_M_I1, const Vector3d& v_M_I1,
-    JacobianMatrixXd* j_T_M_I0, JacobianMatrixXd* j_v_M_I0,
+    const Pose3d& T_M_I0, const Vector3d& v_I0, const Vector3d& bg0,
+    const Vector3d& ba0, const Pose3d& T_M_I1, const Vector3d& v_I1,
+    JacobianMatrixXd* j_T_M_I0, JacobianMatrixXd* j_v_I0,
     JacobianMatrixXd* j_bg0, JacobianMatrixXd* j_ba0,
-    JacobianMatrixXd* j_T_M_I1, JacobianMatrixXd* j_v_M_I1) const {
+    JacobianMatrixXd* j_T_M_I1, JacobianMatrixXd* j_v_I1) const {
+  Vector3d v_M_I0 = v_I0;
+  Vector3d v_M_I1 = v_I1;
+  JacobianMatrixXd* j_v_M_I0 = j_v_I0;
+  JacobianMatrixXd* j_v_M_I1 = j_v_I1;
+
+  JacobianMatrixXd tmp_j_v_M_I0, tmp_j_v_M_I1;
+  if (is_vel0_egocentric_) {
+    v_M_I0 = T_M_I0.rotation() * v_I0;
+    if (j_v_I0) {
+      tmp_j_v_M_I0.resize(j_v_I0->rows(), j_v_I0->cols());
+      j_v_M_I0 = &tmp_j_v_M_I0;
+    }
+  }
+  if (is_vel1_egocentric_) {
+    v_M_I1 = T_M_I1.rotation() * v_I1;
+    if (j_v_I1) {
+      tmp_j_v_M_I1.resize(j_v_I1->rows(), j_v_I1->cols());
+      j_v_M_I1 = &tmp_j_v_M_I1;
+    }
+  }
+
   static const Vector3d gravity = Vector3d(0, 0, 9.81);
   Vector<6> bias_correction;
   bias_correction << bg0 - imu_pre_integration_->getGyroBias(),
@@ -210,6 +231,11 @@ VectorXd ImuPreIntegrationFactor::evaluateError(
       j_v_M_I0->block<3, 3>(6, 0) = invR0m;
 
       *j_v_M_I0 = sqrt_info_ * (*j_v_M_I0);
+      if (is_vel0_egocentric_) {
+        *j_v_I0 = (*j_v_M_I0) * T_M_I0.rotation().matrix();
+      } else {
+        ASSERT(j_v_M_I0 == j_v_I0);
+      }
     }
 
     if (j_v_M_I1) {
@@ -219,6 +245,11 @@ VectorXd ImuPreIntegrationFactor::evaluateError(
       j_v_M_I1->block<3, 3>(6, 0) = -invR0m;
 
       *j_v_M_I1 = sqrt_info_ * (*j_v_M_I1);
+      if (is_vel1_egocentric_) {
+        *j_v_I1 = (*j_v_M_I1) * T_M_I1.rotation().matrix();
+      } else {
+        ASSERT(j_v_M_I1 == j_v_I1);
+      }
     }
 
     if (j_ba0) {

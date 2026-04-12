@@ -173,8 +173,9 @@ class Pose3Buf_ {
       LOGD(
           "Pose3Buf_: attempt to get with a timestamp out of "
           "range (%s out of [%s, %s])! ignored.",
-          toStr(timestamp).c_str(), toStr(posebuf_.front().timestamp).c_str(),
-          toStr(posebuf_.back().timestamp).c_str());
+          toStr(timestamp).c_str(),
+          posebuf_.empty() ? "-" : toStr(posebuf_.front().timestamp).c_str(),
+          posebuf_.empty() ? "-" : toStr(posebuf_.back().timestamp).c_str());
       return false;
     }
     if (posebuf_.size() == 1) {

@@ -793,7 +793,7 @@ class SubFactorByRowBlock
       const JacobianMatrixXd& full_jacobian,
       OutputJacobianMatrix* output_jacobian) const {
     *output_jacobian =
-        full_jacobian.block(_start_row, 0, _n_rows, output_jacobian->cols());
+        full_jacobian.block(_start_row, 0, _n_rows, full_jacobian.cols());
   }
 
   void getSubError(const VectorXd& full_error, VectorXd* output_error) const {
