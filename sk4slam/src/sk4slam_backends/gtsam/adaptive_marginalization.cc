@@ -1,5 +1,9 @@
 #include "sk4slam_backends/gtsam/adaptive_marginalization.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 #include "gtsam_unstable/nonlinear/BayesTreeMarginalizationHelper.h"
 #include "sk4slam_basic/logging.h"
 #include "sk4slam_basic/reflection.h"
@@ -12,7 +16,8 @@ AdaptiveMarginalization::Options::Options(
     int set_min_num_variables, int set_max_num_variables,
     int set_max_num_factors, int set_max_num_connections,
     double set_marginalization_overhead_threshold,
-    double set_marginalization_error_threshold, bool set_aggressive)
+    double set_marginalization_error_threshold, bool set_aggressive,
+    bool set_allow_forceful_marginalization, Policy set_policy)
     : min_num_variables(set_min_num_variables),
       max_num_variables(set_max_num_variables),
       max_num_factors(set_max_num_factors),
@@ -20,9 +25,15 @@ AdaptiveMarginalization::Options::Options(
       marginalization_overhead_threshold(
           set_marginalization_overhead_threshold),
       marginalization_error_threshold(set_marginalization_error_threshold),
-      aggressive(set_aggressive) {
+      aggressive(set_aggressive),
+      allow_forceful_marginalization(set_allow_forceful_marginalization),
+      policy(set_policy) {
   ASSERT(min_num_variables > 0);
   ASSERT(max_num_variables < 0 || max_num_variables > min_num_variables);
+}
+
+void AdaptiveMarginalization::resetISAM2() {
+  isam_ = nullptr;
 }
 
 void AdaptiveMarginalization::bindISAM2(const gtsam::ISAM2* isam) {
@@ -38,7 +49,7 @@ bool AdaptiveMarginalization::isLinearizationFixed(Key key) const {
 
 void AdaptiveMarginalization::warnForPoorLinearization(
     const std::unordered_set<Key>& keys_to_be_marginalized,
-    const std::unordered_set<Key>& forceful_marginalization_keys) const {
+    const std::unordered_set<Key>& allowed_poor_linearization_keys) const {
   for (const auto& key : keys_to_be_marginalized) {
     bool is_linearization_point_fixed = isLinearizationFixed(key);
     double error = getCachedLinearizationError(key);
@@ -47,7 +58,8 @@ void AdaptiveMarginalization::warnForPoorLinearization(
           "This may indicate significant updates occurred after its "
           "linearization point was fixed.";
       static const char* lin_non_fixed_msg =
-          "This may indicate forceful marginalization has been triggered, "
+          "This may indicate balanced or forceful marginalization has been "
+          "triggered, "
           "Otherwise it might be a bug in the adaptive marginalization!";
       if (debug_) {
         LOGD(
@@ -61,7 +73,7 @@ void AdaptiveMarginalization::warnForPoorLinearization(
       }
       ASSERT(
           is_linearization_point_fixed ||
-          forceful_marginalization_keys.count(key));
+          allowed_poor_linearization_keys.count(key));
     }
   }
 }
@@ -72,7 +84,40 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     const std::unordered_set<Key>& force_keep_keys,
     const std::unordered_set<Key>& already_affected_keys,
     const std::unordered_set<Key>& no_relinear_keys) const {
+  for (const Key& key : force_marginalize_keys) {
+    if (force_keep_keys.count(key)) {
+      LOGD(
+          YELLOW
+          "AdaptiveMarginalization: Key %s is both force-marginalized and "
+          "force-kept; force-marginalization takes precedence." RESET,
+          gtsam::DefaultKeyFormatter(key).c_str());
+    }
+  }
+  switch (options_->policy) {
+    case Options::Policy::LEGACY_GREEDY:
+      return determineKeysToMarginalize_policy1(
+          force_marginalize_keys, force_keep_keys, already_affected_keys,
+          no_relinear_keys);
+    case Options::Policy::EFFICIENCY_FIRST:
+      return determineKeysToMarginalize_policy2(
+          force_marginalize_keys, force_keep_keys, already_affected_keys,
+          no_relinear_keys);
+  }
+  throw std::invalid_argument("Unknown adaptive marginalization policy");
+}
+
+std::unordered_set<gtsam::Key>
+AdaptiveMarginalization::determineKeysToMarginalize_policy1(
+    const std::unordered_set<Key>& force_marginalize_keys,
+    const std::unordered_set<Key>& force_keep_keys,
+    const std::unordered_set<Key>& already_affected_keys,
+    const std::unordered_set<Key>& no_relinear_keys) const {
   user_defined_no_relinear_keys_ = &no_relinear_keys;
+
+  // The cached errors are valid only for the current ISAM2 state. Clear them
+  // before every exit path, including the lazy-policy early return below.
+  resetCachedLinearizationErrors();
+  resetCachedMarginalizationErrors();
 
   std::unordered_set<Key> keys_to_be_marginalized = force_marginalize_keys;
   std::unordered_set<FactorIndex> factors_to_be_marginalized =
@@ -85,10 +130,6 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     warnForPoorLinearization(keys_to_be_marginalized, force_marginalize_keys);
     return keys_to_be_marginalized;
   }
-
-  // Clear cached data for linearization and marginalization errors
-  resetCachedLinearizationErrors();
-  resetCachedMarginalizationErrors();
 
   auto keys_to_be_marginalized_str = [&keys_to_be_marginalized]() {
     return toStr(
@@ -233,6 +274,18 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     return keys_to_be_marginalized;
   }
 
+  if (!options_->allow_forceful_marginalization) {
+    LOGD(
+        YELLOW
+        "AdaptiveMarginalization: Balanced marginalization insufficient and "
+        "forceful marginalization is disabled. Returning %d variables and %d "
+        "factors. Keys = %s" RESET,
+        keys_to_be_marginalized.size(), factors_to_be_marginalized.size(),
+        keys_to_be_marginalized_str().c_str());
+    warnForPoorLinearization(keys_to_be_marginalized, force_marginalize_keys);
+    return keys_to_be_marginalized;
+  }
+
   // Step 3: Perform forceful marginalization if balanced marginalization is
   // insufficient
   LOGD(
@@ -246,7 +299,14 @@ AdaptiveMarginalization::determineKeysToMarginalize(
   double last_marg_error = 0.0;
   std::unordered_set<Key> forceful_marginalization_keys =
       force_marginalize_keys;
-  while (!marginalization_error_min_heap.empty()) {
+
+  const bool exhaust_all_forceful_candidates =
+      true;  // Set false for stop-when-sufficient. Set true for
+             // exhaust-all-marginalizable.
+  while (!marginalization_error_min_heap.empty() &&
+         (exhaust_all_forceful_candidates ||
+          needsFurtherMarginalization(
+              keys_to_be_marginalized, factors_to_be_marginalized))) {
     const auto& top = marginalization_error_min_heap.top();
     const Key& key = top.first;
     const double& marg_error = top.second;
@@ -267,6 +327,12 @@ AdaptiveMarginalization::determineKeysToMarginalize(
     last_marg_error = marg_error;
     forceful_marginalization_keys.insert(key);
     keys_to_be_marginalized.insert(key);
+    if (!exhaust_all_forceful_candidates) {
+      // affected_factors needs to be updated for stop-when-sufficient policy.
+      const auto& affected_factors = key_to_factor_indices[key];
+      factors_to_be_marginalized.insert(
+          affected_factors.begin(), affected_factors.end());
+    }
     marginalization_error_min_heap.pop();
   }
   LOGD(
@@ -281,10 +347,285 @@ AdaptiveMarginalization::determineKeysToMarginalize(
   return keys_to_be_marginalized;
 }
 
+std::unordered_set<gtsam::Key>
+AdaptiveMarginalization::determineKeysToMarginalize_policy2(
+    const std::unordered_set<Key>& force_marginalize_keys,
+    const std::unordered_set<Key>& force_keep_keys,
+    const std::unordered_set<Key>& already_affected_keys,
+    const std::unordered_set<Key>& no_relinear_keys) const {
+  // Smart marginalization is always eager in this policy. Balanced and
+  // forceful marginalization stop or start according to graph-size pressure,
+  // so the generic aggressive option does not alter this policy.
+  static_cast<void>(options_->aggressive);
+  user_defined_no_relinear_keys_ = &no_relinear_keys;
+  resetCachedLinearizationErrors();
+  resetCachedMarginalizationErrors();
+
+  std::unordered_set<Key> keys_to_be_marginalized = force_marginalize_keys;
+  std::unordered_set<FactorIndex> factors_to_be_marginalized =
+      getFactorsInvolved(keys_to_be_marginalized);
+  std::unordered_set<Key> allowed_poor_linearization_keys =
+      force_marginalize_keys;
+  const gtsam::VariableIndex& key_to_factor_indices = isam_->getVariableIndex();
+
+  auto add_key = [&keys_to_be_marginalized, &factors_to_be_marginalized,
+                  &key_to_factor_indices](Key key) {
+    if (!keys_to_be_marginalized.insert(key).second) {
+      return false;
+    }
+    const auto& affected_factors = key_to_factor_indices[key];
+    factors_to_be_marginalized.insert(
+        affected_factors.begin(), affected_factors.end());
+    return true;
+  };
+
+  auto add_candidates_below_threshold =
+      [&add_key, &allowed_poor_linearization_keys](
+          const CandidateErrors& candidates, double threshold) {
+        size_t num_added = 0;
+        for (const auto& [key, error] : candidates) {
+          if (error < threshold && add_key(key)) {
+            allowed_poor_linearization_keys.insert(key);
+            ++num_added;
+          }
+        }
+        return num_added;
+      };
+
+  CandidateErrors leaf_region_candidates =
+      collectLeafRegionCandidates(force_marginalize_keys, force_keep_keys);
+  CandidateErrors upward_path_candidates =
+      collectUpwardUnavoidablePathCandidates(
+          force_marginalize_keys, force_keep_keys, already_affected_keys);
+  CandidateErrors fixed_candidates =
+      mergeCandidateErrors(leaf_region_candidates, upward_path_candidates);
+
+  // Smart marginalization: eagerly select every efficient candidate within
+  // the configured preferred error range, regardless of current graph size.
+  double current_error_threshold = options_->marginalization_error_threshold;
+  CandidateErrors downward_path_candidates =
+      collectDownwardUnavoidablePathCandidates(
+          force_marginalize_keys, force_keep_keys, current_error_threshold);
+  CandidateErrors current_candidates =
+      mergeCandidateErrors(fixed_candidates, downward_path_candidates);
+  add_candidates_below_threshold(current_candidates, current_error_threshold);
+
+  // Balanced marginalization: raise the error threshold one discrete candidate
+  // value at a time. Recompute only the threshold-dependent downward region,
+  // then absorb the complete efficient closure at the new threshold.
+  while (needsFurtherMarginalization(
+      keys_to_be_marginalized, factors_to_be_marginalized)) {
+    double next_candidate_error = std::numeric_limits<double>::infinity();
+    for (const auto& [key, error] : current_candidates) {
+      if (!keys_to_be_marginalized.count(key) && error < next_candidate_error) {
+        next_candidate_error = error;
+      }
+    }
+    if (!std::isfinite(next_candidate_error)) {
+      break;
+    }
+
+    current_error_threshold = std::nextafter(
+        next_candidate_error, std::numeric_limits<double>::infinity());
+    downward_path_candidates = collectDownwardUnavoidablePathCandidates(
+        force_marginalize_keys, force_keep_keys, current_error_threshold);
+    current_candidates =
+        mergeCandidateErrors(fixed_candidates, downward_path_candidates);
+    add_candidates_below_threshold(current_candidates, current_error_threshold);
+  }
+
+  if (needsFurtherMarginalization(
+          keys_to_be_marginalized, factors_to_be_marginalized) &&
+      options_->allow_forceful_marginalization) {
+    // Forceful marginalization deliberately falls back to ordinary
+    // marginalization of every remaining eligible variable. It avoids relying
+    // on inaccurate local estimates of re-elimination cost or future fill-in
+    // and maximally reduces the remaining graph.
+    iterateOverMarginalizableKeys(
+        [&add_key, &keys_to_be_marginalized, &force_keep_keys,
+         &allowed_poor_linearization_keys](const Key& key) {
+          if (keys_to_be_marginalized.count(key) ||
+              force_keep_keys.count(key)) {
+            return false;
+          }
+          if (add_key(key)) {
+            allowed_poor_linearization_keys.insert(key);
+          }
+          return false;
+        });
+  }
+
+  warnForPoorLinearization(
+      keys_to_be_marginalized, allowed_poor_linearization_keys);
+  return keys_to_be_marginalized;
+}
+
+AdaptiveMarginalization::CandidateErrors
+AdaptiveMarginalization::collectLeafRegionCandidates(
+    const std::unordered_set<Key>& force_marginalize_keys,
+    const std::unordered_set<Key>& force_keep_keys) const {
+  struct SubtreeResult {
+    bool fully_peelable;
+    double max_direct_marginalization_error;
+  };
+
+  CandidateErrors candidates;
+  std::function<SubtreeResult(const sharedClique&)> collect_from_subtree =
+      [this, &collect_from_subtree, &candidates, &force_marginalize_keys,
+       &force_keep_keys](const sharedClique& clique) -> SubtreeResult {
+    bool all_children_fully_peelable = true;
+    double preceding_max_direct_error = 0.0;
+    for (const sharedClique& child : clique->children) {
+      SubtreeResult child_result = collect_from_subtree(child);
+      if (!child_result.fully_peelable) {
+        all_children_fully_peelable = false;
+        continue;
+      }
+      preceding_max_direct_error = std::max(
+          preceding_max_direct_error,
+          child_result.max_direct_marginalization_error);
+    }
+    if (!all_children_fully_peelable) {
+      return {false, preceding_max_direct_error};
+    }
+
+    for (Key key : clique->conditional()->frontals()) {
+      if (force_marginalize_keys.count(key)) {
+        preceding_max_direct_error = std::max(
+            preceding_max_direct_error, getCachedMarginalizationError(key));
+        continue;
+      }
+      if (force_keep_keys.count(key) || !isMarginalizable(key)) {
+        return {false, preceding_max_direct_error};
+      }
+
+      preceding_max_direct_error = std::max(
+          preceding_max_direct_error, getCachedMarginalizationError(key));
+      candidates.emplace(key, preceding_max_direct_error);
+    }
+    return {true, preceding_max_direct_error};
+  };
+
+  for (const sharedClique& root : isam_->roots()) {
+    collect_from_subtree(root);
+  }
+  return candidates;
+}
+
+AdaptiveMarginalization::CandidateErrors
+AdaptiveMarginalization::collectUpwardUnavoidablePathCandidates(
+    const std::unordered_set<Key>& force_marginalize_keys,
+    const std::unordered_set<Key>& force_keep_keys,
+    const std::unordered_set<Key>& already_affected_keys) const {
+  std::unordered_set<const Clique*> upward_path_sources;
+  for (Key key : force_marginalize_keys) {
+    upward_path_sources.insert((*isam_)[key].get());
+  }
+  std::unordered_set<const Clique*> additional_cliques =
+      gatherAdditionalCliquesToReEliminate(*isam_, force_marginalize_keys);
+  upward_path_sources.insert(
+      additional_cliques.begin(), additional_cliques.end());
+  for (Key key : already_affected_keys) {
+    upward_path_sources.insert((*isam_)[key].get());
+  }
+
+  std::unordered_set<const Clique*> unavoidable_cliques =
+      gatherCliquesAlongPathToRoot(upward_path_sources);
+
+  CandidateErrors candidates;
+  for (const Clique* clique : unavoidable_cliques) {
+    for (Key key : clique->conditional()->frontals()) {
+      if (force_marginalize_keys.count(key) || force_keep_keys.count(key) ||
+          !isMarginalizable(key)) {
+        continue;
+      }
+      candidates.emplace(key, getCachedMarginalizationError(key));
+    }
+  }
+  return candidates;
+}
+
+AdaptiveMarginalization::CandidateErrors
+AdaptiveMarginalization::collectDownwardUnavoidablePathCandidates(
+    const std::unordered_set<Key>& force_marginalize_keys,
+    const std::unordered_set<Key>& force_keep_keys,
+    double error_threshold) const {
+  std::vector<sharedClique> force_marginalization_cliques;
+  std::unordered_set<const Clique*> visited_force_cliques;
+  for (Key key : force_marginalize_keys) {
+    sharedClique clique = (*isam_)[key];
+    if (visited_force_cliques.insert(clique.get()).second) {
+      force_marginalization_cliques.push_back(clique);
+    }
+  }
+
+  std::unordered_set<const Clique*> unavoidable_cliques;
+  // Forced marginalization affects every downward path to a retained anchor,
+  // since retained descendants must be ordered after the force-marginalized
+  // variables. The union of paths to all anchors is equivalent to using only
+  // the deepest anchor on each branch, so no explicit deepest-anchor filtering
+  // is needed.
+  std::function<bool(const sharedClique&)> collect_downward_paths =
+      [this, &collect_downward_paths, &unavoidable_cliques,
+       &force_marginalize_keys, &force_keep_keys,
+       error_threshold](const sharedClique& clique) {
+        bool subtree_contains_retained_anchor = false;
+        for (const sharedClique& child : clique->children) {
+          subtree_contains_retained_anchor |= collect_downward_paths(child);
+        }
+
+        for (Key key : clique->conditional()->frontals()) {
+          if (force_marginalize_keys.count(key)) {
+            continue;  // Forced marginalization takes precedence over keeping.
+          }
+          if (force_keep_keys.count(key) || !isMarginalizable(key) ||
+              getCachedMarginalizationError(key) >= error_threshold) {
+            subtree_contains_retained_anchor = true;
+          }
+        }
+
+        if (subtree_contains_retained_anchor) {
+          unavoidable_cliques.insert(clique.get());
+        }
+        return subtree_contains_retained_anchor;
+      };
+
+  for (const sharedClique& force_clique : force_marginalization_cliques) {
+    collect_downward_paths(force_clique);
+  }
+
+  CandidateErrors candidates;
+  for (const Clique* clique : unavoidable_cliques) {
+    for (Key key : clique->conditional()->frontals()) {
+      if (force_marginalize_keys.count(key) || force_keep_keys.count(key) ||
+          !isMarginalizable(key)) {
+        continue;
+      }
+      candidates.emplace(key, getCachedMarginalizationError(key));
+    }
+  }
+  return candidates;
+}
+
+AdaptiveMarginalization::CandidateErrors
+AdaptiveMarginalization::mergeCandidateErrors(
+    const CandidateErrors& base_candidates,
+    const CandidateErrors& preferred_candidates) {
+  CandidateErrors merged_candidates = base_candidates;
+  for (const auto& [key, preferred_error] : preferred_candidates) {
+    merged_candidates[key] = preferred_error;
+  }
+  return merged_candidates;
+}
+
 bool AdaptiveMarginalization::needsFurtherMarginalization(
     const std::unordered_set<Key>& assumed_marginalized_keys,
     const std::unordered_set<FactorIndex>& assumed_marginalized_factors) const {
   const gtsam::VariableIndex& key_to_factor_indices = isam_->getVariableIndex();
+  // Factor and connection counts below are estimates. They subtract the
+  // original factors involving the assumed-marginalized keys, but cannot
+  // account for the marginal factors (and potentially denser connections)
+  // that will be generated by the actual marginalization operation.
   int rest_keys =
       key_to_factor_indices.size() - assumed_marginalized_keys.size();
   int rest_factors =

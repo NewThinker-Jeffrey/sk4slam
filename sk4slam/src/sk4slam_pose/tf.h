@@ -42,7 +42,6 @@ struct TfTransform_ {
     }
   }
 
-  TfTransform_() : is_dynamic(false) {}
   TfTransform_(
       const FrameId& frame_id, const FrameId& child_frame_id,
       const bool is_dynamic, const Pose& pose, std::shared_ptr<PoseBuf> buffer)
@@ -52,9 +51,13 @@ struct TfTransform_ {
         pose(pose),
         pose_buffer(std::move(buffer)) {
     if (is_dynamic) {
-      pose_buffer = std::make_shared<PoseBuf>();
+      ASSERT(pose_buffer);
     }
   }
+
+  // Disable copy constructor and assignment operator.
+  TfTransform_(const TfTransform_&) = delete;
+  TfTransform_& operator=(const TfTransform_&) = delete;
 
  protected:
   std::shared_ptr<PoseBuf> pose_buffer
@@ -102,6 +105,9 @@ class Tf_ {
   using TfUpdate = TfUpdate_<_FrameId, _Timestamp>;
   using TfUpdateCallback =
       std::function<void(const std::shared_ptr<const TfUpdate>&)>;
+
+  explicit Tf_(int per_pose_buf_size = -1)
+      : per_pose_buf_size_(per_pose_buf_size) {}
 
   /// @brief  Register a calback function to be called when a transform is
   /// updated.
@@ -161,7 +167,7 @@ class Tf_ {
       EXCLUDES(transforms_mutex_) {
     auto new_transform = std::make_shared<Transform>(
         parent_frame_id, child_frame_id, true, Pose::Identity(),
-        std::make_shared<PoseBuf>());
+        std::make_shared<PoseBuf>(per_pose_buf_size_));
     if (!insertTfTransform(new_transform)) {
       LOGW(
           "sk4slam::TF: DynamicTransform already exists for frame %s!",
@@ -589,7 +595,7 @@ class Tf_ {
       return std::make_pair(
           true, &static_transforms_cache_.insert({pair, pose}).first->second);
     } else {
-      return std::make_pair(true, nullptr_pose);
+      return std::make_pair(false, nullptr_pose);
     }
   }
 
@@ -612,9 +618,10 @@ class Tf_ {
   }
 
  protected:
+  const int per_pose_buf_size_ = -1;
+
   // TODO(jeffrey): Use our atomic hash table instead of std::unordered_map and
   // std::unordered_set;
-
   std::unordered_map<FrameId, TransformPtr> transforms_
       GUARDED_BY(transforms_mutex_);
 

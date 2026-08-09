@@ -60,6 +60,12 @@ double ImuHandler::estimateSamplingRate(const std::vector<ImuData>& data) {
 }
 
 void ImuHandler::runMotionFilter(Segment* segment, double sampling_rate) const {
+  // Get the sampling rate
+  if (sampling_rate <= 0) {
+    sampling_rate = estimateSamplingRate(segment->data);
+    ASSERT(sampling_rate > 0);
+  }
+
   // Check whether the measurements are within the specified ranges
   segment->gyro_exceeds_range = false;
   segment->accel_exceeds_range = false;
@@ -68,12 +74,12 @@ void ImuHandler::runMotionFilter(Segment* segment, double sampling_rate) const {
   for (const auto& imu_data : segment->data) {
     const auto& am = imu_data.am;
     const auto& wm = imu_data.wm;
-    if (!segment->gyro_exceeds_range) {
+    if (w_range > 0 && !segment->gyro_exceeds_range) {
       segment->gyro_exceeds_range = std::abs(wm.x()) > w_range ||
                                     std::abs(wm.y()) > w_range ||
                                     std::abs(wm.z()) > w_range;
     }
-    if (!segment->accel_exceeds_range) {
+    if (a_range > 0 && !segment->accel_exceeds_range) {
       segment->accel_exceeds_range = std::abs(am.x()) > a_range ||
                                      std::abs(am.y()) > a_range ||
                                      std::abs(am.z()) > a_range;
@@ -81,19 +87,17 @@ void ImuHandler::runMotionFilter(Segment* segment, double sampling_rate) const {
   }
 
   // Run specific motion filter
+  segment->filtered_data = segment->data;
+  segment->corrected_sigmas = sigmas_;
+  segment->vibration_status = VibrationStatus::kUnknown;
   if (options_.motion_filter_method == "polynomial") {
     runPolynomialMotionFilter(segment, sampling_rate);
   } else if (options_.motion_filter_method == "lowpass") {
     runLowPassMotionFilter(segment, sampling_rate);
-  } else {
-    segment->filtered_data = segment->data;
-    segment->corrected_sigmas = sigmas_;
-    segment->vibration_status = VibrationStatus::kUnknown;
-    if (options_.motion_filter_method != "none") {
-      LOGE(
-          "ImuHandler::runMotionFilter(): Unknown motion filter method: %s",
-          options_.motion_filter_method.c_str());
-    }
+  } else if (options_.motion_filter_method != "none") {
+    LOGE(
+        "ImuHandler::runMotionFilter(): Unknown motion filter method: %s",
+        options_.motion_filter_method.c_str());
   }
 
   // Logging for debugging
@@ -132,7 +136,6 @@ void ImuHandler::runPolynomialMotionFilter(
   segment->filtered_data = segment->data;
   segment->corrected_sigmas = sigmas_;
   segment->vibration_status = VibrationStatus::kNoVibration;
-  static const double default_acc_sigma_multiplier = 10.0;
 
   int polynomial_order = options_.polynomial_order;
   int errors_dof = static_cast<int>(n) - (polynomial_order + 1);
@@ -145,15 +148,10 @@ void ImuHandler::runPolynomialMotionFilter(
         "points are provided." RESET,
         polynomial_order + 2, polynomial_order, n);
     segment->vibration_status = VibrationStatus::kUnknown;
+    return;
 
-    polynomial_order = 0;
-    errors_dof = static_cast<int>(n) - (polynomial_order + 1);
-  }
-
-  // Get the sampling rate
-  if (sampling_rate < 0) {
-    sampling_rate = estimateSamplingRate(segment->data);
-    ASSERT(sampling_rate > 0);
+    // polynomial_order = 0;
+    // errors_dof = static_cast<int>(n) - (polynomial_order + 1);
   }
 
   // Convert continuous-time noise standard deviation to discrete-time
@@ -184,7 +182,7 @@ void ImuHandler::runPolynomialMotionFilter(
   Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(X);
   ASSERT(qr.rank() >= polynomial_order + 1);
 
-  double max_rmse = 1.0;
+  double max_normalized_rmse = 1.0;
   for (int axis = 0; axis < 3; ++axis) {
     Eigen::VectorXd a(segment->data.size());
     for (size_t i = 0; i < segment->data.size(); ++i) {
@@ -202,32 +200,35 @@ void ImuHandler::runPolynomialMotionFilter(
     }
     Eigen::VectorXd residuals = a - fitted;
 
-    // Update max_rmse and the vibration status.
+    // Update max_normalized_rmse and the vibration status.
 
     // Normalize residuals using discrete-time noise standard deviation
     Eigen::VectorXd normalized_residuals = residuals / discrete_accel_sigma;
 
     // Calculate RMSE and maximum absolute error of the normalized residuals
-    double rmse = std::sqrt(normalized_residuals.squaredNorm() / errors_dof);
-    double max_error = normalized_residuals.cwiseAbs().maxCoeff();
+    double normalized_rmse =
+        std::sqrt(normalized_residuals.squaredNorm() / errors_dof);
+    double max_normalized_error = normalized_residuals.cwiseAbs().maxCoeff();
     LOGD(
-        "ImuHandler::runPolynomialMotionFilter(): DEBUG Axis %d, rmse = %f, "
-        "max_error = %f",
-        axis, rmse, max_error);
+        "ImuHandler::runPolynomialMotionFilter(): DEBUG Axis %d, "
+        "normalized_rmse = %f, max_normalized_error = %f",
+        axis, normalized_rmse, max_normalized_error);
 
     // Check if either RMSE or maximum error exceeds the predefined thresholds
     if (segment->vibration_status == VibrationStatus::kNoVibration) {
-      if (rmse > options_.vibration_rmse_thr ||
-          max_error > options_.vibration_max_err_thr) {
+      if (normalized_rmse > options_.vibration_rmse_thr ||
+          max_normalized_error > options_.vibration_max_err_thr) {
         segment->vibration_status =
             VibrationStatus::kVibrationDetected;  // Vibration detected
       }
     }
-    max_rmse = std::max(max_rmse, rmse);
+    max_normalized_rmse = std::max(max_normalized_rmse, normalized_rmse);
   }
 
   // Correct the acc sigma
-  segment->corrected_sigmas.ct_accel_sigma *= max_rmse;
+  if (options_.correct_sigmas) {
+    segment->corrected_sigmas.ct_accel_sigma *= max_normalized_rmse;
+  }
 }
 
 std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
@@ -262,12 +263,17 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
   }
 
   // First run the motion filter to correct the IMU data and sigmas
-  runMotionFilter(segment.get());
+  runMotionFilter(segment.get(), options_.sampling_rate);
 
   // If the time gap between two consecutive IMU data is too large, the
   // integration will be inaccurate. We fill the gaps by interpolating the
   // IMU data to avoid this.
-  auto prop_data = ImuData::fillDataGaps(segment->filtered_data, 0.011);
+  std::vector<ImuData> prop_data;
+  if (options_.integrate_filtered_data) {
+    prop_data = ImuData::fillDataGaps(segment->filtered_data, 0.011);
+  } else {
+    prop_data = ImuData::fillDataGaps(segment->data, 0.011);
+  }
   ASSERT(prop_data.size() >= 2);
 
   // Feed data to the imu preintegrator
@@ -292,12 +298,60 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
       (!state_only && bias_cov_6x6.rows() == 6 && segment->isGyroReliable() &&
        segment->isAccReliable());
 
+  double ex_range_gyro_var = -1.;
+  double ex_range_acc_var = -1.;
+  const double gyro_range_rad = options_.gyro_range * M_PI / 180.0;
+  if (options_.gyro_range > 0. && options_.ex_range_gyro_sigma > 0.) {
+    ex_range_gyro_var =
+        (options_.ex_range_gyro_sigma * options_.ex_range_gyro_sigma);
+  }
+  if (options_.acc_range > 0. && options_.ex_range_acc_sigma > 0.) {
+    ex_range_acc_var =
+        (options_.ex_range_acc_sigma * options_.ex_range_acc_sigma);
+  }
+
   // PreIntegrate the IMU data and analyze the motion
   size_t data_i = 0;
   std::vector<double> const_velocity_chi2s,
       zero_rotation_chi2s;  // For debugging
+  double prev_time = -1;
   for (const auto& imu_data : prop_data) {
-    imu_preint->update(imu_data.timestamp, imu_data.wm, imu_data.am);
+    const auto& t = imu_data.timestamp;
+    if (t <= prev_time) {
+      LOGD(
+          RED
+          "ImuHandler::processNewSegment(): IMU prop data is not in order! %f "
+          "<= %f" RESET,
+          t, prev_time);
+      continue;
+    }
+
+    double dt = 1e6;  // Defaults to a large value
+    if (prev_time >= 0) {
+      dt = t - prev_time;
+    }
+    prev_time = t;
+
+    const auto& wm = imu_data.wm;
+    const auto& am = imu_data.am;
+    auto wm_vars = imu_preint->getGyroDiscretVars(wm, dt);
+    auto am_vars = imu_preint->getAccelDiscretVars(am, dt);
+
+    // Set entries of wm_vars to ex_range_gyro_var if the gyro measurement
+    // exceeds the specified range.
+    if (ex_range_gyro_var > 0.) {
+      wm_vars = (wm.cwiseAbs().array() > gyro_range_rad)
+                    .select(ex_range_gyro_var, wm_vars);
+    }
+
+    // Set entries of am_vars to ex_range_acc_var if the accel measurement
+    // exceeds the specified range.
+    if (ex_range_acc_var > 0.) {
+      am_vars = (am.cwiseAbs().array() > options_.acc_range)
+                    .select(ex_range_acc_var, am_vars);
+    }
+
+    imu_preint->update(t, wm, am, wm_vars, am_vars);
 
     if (data_i > 0 && is_const_velocity) {
       Eigen::MatrixXd vel_cov =

@@ -55,13 +55,16 @@ ImuIntegration::Options ImuIntegration::Options::StateBuffer() {
 }
 
 const ImuIntegration::Result& ImuIntegration::update(
-    const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel) {
+    const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel,
+    const Vector3d& gyro_discret_vars, const Vector3d& accel_discret_vars) {
   if (timestamps_.empty()) {
     ASSERT(initial_time_ < 0);
     initial_time_ = timestamp;
     timestamps_.push_back(timestamp);
     accel_measurements_.push_back(accel);
     gyro_measurements_.push_back(gyro);
+    gyro_discret_vars_.push_back(gyro_discret_vars);
+    accel_discret_vars_.push_back(accel_discret_vars);
     results_.emplace_back(Result(initial_state_));
     return results_.back();
   } else if (timestamp <= timestamps_.back()) {
@@ -75,13 +78,57 @@ const ImuIntegration::Result& ImuIntegration::update(
     const Timestamp& last_time = timestamps_.back();
     const Vector3d& last_gyro = gyro_measurements_.back();
     const Vector3d& last_accel = accel_measurements_.back();
+    const Vector3d& last_gyro_discret_vars = gyro_discret_vars_.back();
+    const Vector3d& last_accel_discret_vars = accel_discret_vars_.back();
     double dt = timestamp - last_time;
     const Result& last_result = results_.back();
-    Result new_result =
-        integrate(last_result, dt, last_gyro, gyro, last_accel, accel);
-    cache(timestamp, gyro, accel, std::move(new_result));
+    Result new_result = integrate(
+        last_result, dt, last_gyro, gyro, last_accel, accel,
+        last_gyro_discret_vars, gyro_discret_vars, last_accel_discret_vars,
+        accel_discret_vars);
+    cache(
+        timestamp, gyro, accel, gyro_discret_vars, accel_discret_vars,
+        std::move(new_result));
     return results_.back();
   }
+}
+
+const ImuIntegration::Result& ImuIntegration::update(
+    const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel) {
+  // First compute the discretized measurement variances based on the default
+  // imu_sigmas.
+  double dt = 1e6;  // Default to a large value.
+  if (!timestamps_.empty() && timestamp > timestamps_.back()) {
+    dt = timestamp - timestamps_.back();
+  }
+  const Vector3d gyro_vars = getGyroDiscretVars(gyro, dt);
+  const Vector3d accel_vars = getAccelDiscretVars(accel, dt);
+
+  // Then call the other update function.
+  return update(timestamp, gyro, accel, gyro_vars, accel_vars);
+}
+
+Vector3d ImuIntegration::getGyroDiscretVars(
+    const Vector3d& gyro, double dt) const {
+  const double gyro_simga2 = sigmas_.ct_gyro_sigma * sigmas_.ct_gyro_sigma / dt;
+  const double gyro_scale_sigma2 =
+      sigmas_.gyro_scale_err_sigma * sigmas_.gyro_scale_err_sigma;
+  return Vector3d(
+      gyro_simga2 + gyro_scale_sigma2 * gyro.x() * gyro.x(),
+      gyro_simga2 + gyro_scale_sigma2 * gyro.y() * gyro.y(),
+      gyro_simga2 + gyro_scale_sigma2 * gyro.z() * gyro.z());
+}
+
+Vector3d ImuIntegration::getAccelDiscretVars(
+    const Vector3d& accel, double dt) const {
+  const double accel_sigma2 =
+      sigmas_.ct_accel_sigma * sigmas_.ct_accel_sigma / dt;
+  const double accel_scale_sigma2 =
+      sigmas_.accel_scale_err_sigma * sigmas_.accel_scale_err_sigma;
+  return Vector3d(
+      accel_sigma2 + accel_scale_sigma2 * accel.x() * accel.x(),
+      accel_sigma2 + accel_scale_sigma2 * accel.y() * accel.y(),
+      accel_sigma2 + accel_scale_sigma2 * accel.z() * accel.z());
 }
 
 const ImuIntegration::Result& ImuIntegration::repropagate(
@@ -106,20 +153,27 @@ const ImuIntegration::Result& ImuIntegration::repropagate(
   for (size_t i = 1; i < timestamps_.size(); ++i) {
     const Timestamp& last_time = timestamps_[i - 1];
     const Vector3d& last_gyro = gyro_measurements_[i - 1];
+    const Vector3d& last_gyro_discret_vars = gyro_discret_vars_[i - 1];
     int last_accel_idx = options_.rotation_only ? 0 : i - 1;
     const Vector3d& last_accel = accel_measurements_[last_accel_idx];
+    const Vector3d& last_accel_discret_vars =
+        accel_discret_vars_[last_accel_idx];
     int last_result_idx = options_.cache_intermediate_results ? i - 1 : 0;
     const Result& last_result = results_[last_result_idx];
 
     const Timestamp& timestamp = timestamps_[i];
     const Vector3d& gyro = gyro_measurements_[i];
+    const Vector3d& curr_gyro_discret_vars = gyro_discret_vars_[i];
     int accel_idx = options_.rotation_only ? 0 : i;
     const Vector3d& accel = accel_measurements_[accel_idx];
+    const Vector3d& curr_accel_discret_vars = accel_discret_vars_[i];
 
     double dt = timestamp - last_time;
     int result_idx = options_.cache_intermediate_results ? i : 0;
-    results_[result_idx] =
-        integrate(last_result, dt, last_gyro, gyro, last_accel, accel);
+    results_[result_idx] = integrate(
+        last_result, dt, last_gyro, gyro, last_accel, accel,
+        last_gyro_discret_vars, curr_gyro_discret_vars, last_accel_discret_vars,
+        curr_accel_discret_vars);
   }
   return results_.back();
 }
@@ -398,15 +452,9 @@ const ImuIntegration::Result* ImuIntegration::findResult(
 }
 
 ImuIntegration::Result ImuIntegration::integrate(
-    const Result& prev_result, double dt, const Vector3d& prev_gyro,
-    const Vector3d& new_gyro, const Vector3d& prev_accel,
-    const Vector3d& new_accel) {
-  Vector3d mean_gyro, mean_accel;
-  mean_gyro = (new_gyro + prev_gyro) / 2.0;
-  if (!options_.rotation_only) {
-    mean_accel = (new_accel + prev_accel) / 2.0;
-  }
-
+    const Result& prev_result, double dt, const Vector3d& mean_gyro,
+    const Vector3d& mean_accel, const Vector3d& mean_gyro_discret_vars,
+    const Vector3d& mean_accel_discret_vars) {
   Result r;
   const Vector3d& bg = gyro_bias_;
   const Vector3d& ba = accel_bias_;
@@ -505,24 +553,8 @@ ImuIntegration::Result ImuIntegration::integrate(
   }
 
   if (options_.compute_process_noise_cov) {
-    const double gyro_simga2 =
-        sigmas_.ct_gyro_sigma * sigmas_.ct_gyro_sigma / dt;
-    const double accel_sigma2 =
-        sigmas_.ct_accel_sigma * sigmas_.ct_accel_sigma / dt;
-    const double gyro_scale_sigma2 =
-        sigmas_.gyro_scale_err_sigma * sigmas_.gyro_scale_err_sigma;
-    const double accel_scale_sigma2 =
-        sigmas_.accel_scale_err_sigma * sigmas_.accel_scale_err_sigma;
-    const Eigen::Vector3d gyro_vars(
-        gyro_simga2 + gyro_scale_sigma2 * mean_gyro.x() * mean_gyro.x(),
-        gyro_simga2 + gyro_scale_sigma2 * mean_gyro.y() * mean_gyro.y(),
-        gyro_simga2 + gyro_scale_sigma2 * mean_gyro.z() * mean_gyro.z());
-    const Eigen::Vector3d accel_vars(
-        accel_sigma2 + accel_scale_sigma2 * mean_accel.x() * mean_accel.x(),
-        accel_sigma2 + accel_scale_sigma2 * mean_accel.y() * mean_accel.y(),
-        accel_sigma2 + accel_scale_sigma2 * mean_accel.z() * mean_accel.z());
-    const Eigen::Matrix3d gyro_cov = gyro_vars.asDiagonal();
-    const Eigen::Matrix3d accel_cov = accel_vars.asDiagonal();
+    const Eigen::Matrix3d gyro_cov = mean_gyro_discret_vars.asDiagonal();
+    const Eigen::Matrix3d accel_cov = mean_accel_discret_vars.asDiagonal();
 
     // Compute the covariance of process noise in the current step
     if (options_.rotation_only) {
@@ -561,6 +593,29 @@ ImuIntegration::Result ImuIntegration::integrate(
   return r;
 }
 
+ImuIntegration::Result ImuIntegration::integrate(
+    const Result& prev_result, double dt, const Vector3d& prev_gyro,
+    const Vector3d& new_gyro, const Vector3d& prev_accel,
+    const Vector3d& new_accel, const Vector3d& prev_gyro_discret_vars,
+    const Vector3d& new_gyro_discret_vars,
+    const Vector3d& prev_accel_discret_vars,
+    const Vector3d& new_accel_discret_vars) {
+  Vector3d mean_gyro, mean_accel;
+  Vector3d mean_gyro_discret_vars, mean_accel_discret_vars;
+  mean_gyro = (new_gyro + prev_gyro) / 2.0;
+  mean_gyro_discret_vars =
+      (new_gyro_discret_vars + prev_gyro_discret_vars) / 2.0;
+  if (!options_.rotation_only) {
+    mean_accel = (new_accel + prev_accel) / 2.0;
+    mean_accel_discret_vars =
+        (new_accel_discret_vars + prev_accel_discret_vars) / 2.0;
+  }
+
+  return integrate(
+      prev_result, dt, mean_gyro, mean_accel, mean_gyro_discret_vars,
+      mean_accel_discret_vars);
+}
+
 void ImuIntegration::applyGravity(
     const Timestamp& timestamp, const Vector3d& gravity, State* state) const {
   ASSERT(initial_time_ >= 0);
@@ -571,6 +626,7 @@ void ImuIntegration::applyGravity(
 
 void ImuIntegration::cache(
     const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel,
+    const Vector3d& gyro_discret_vars, const Vector3d& accel_discret_vars,
     Result result) {
   if (options_.cache_intermediate_results || options_.cache_measurements) {
     timestamps_.push_back(timestamp);
@@ -591,18 +647,29 @@ void ImuIntegration::cache(
     gyro_measurements_.push_back(gyro);
     ASSERT(gyro_measurements_.size() == timestamps_.size());
 
+    gyro_discret_vars_.push_back(gyro_discret_vars);
+    ASSERT(gyro_discret_vars_.size() == timestamps_.size());
+
     if (!options_.rotation_only) {
       accel_measurements_.push_back(accel);
       ASSERT(accel_measurements_.size() == timestamps_.size());
+
+      accel_discret_vars_.push_back(accel_discret_vars);
+      ASSERT(accel_discret_vars_.size() == timestamps_.size());
     } else {
       ASSERT(accel_measurements_.size() == 1);
+      ASSERT(accel_discret_vars_.size() == 1);
     }
   } else {
     ASSERT(gyro_measurements_.size() == 1);
+    ASSERT(gyro_discret_vars_.size() == 1);
     ASSERT(accel_measurements_.size() == 1);
+    ASSERT(accel_discret_vars_.size() == 1);
     gyro_measurements_[0] = gyro;
+    gyro_discret_vars_[0] = gyro_discret_vars;
     if (!options_.rotation_only) {
       accel_measurements_[0] = accel;
+      accel_discret_vars_[0] = accel_discret_vars;
     }
   }
 }

@@ -762,6 +762,11 @@ FixedLagSmoother::selectMarginalizationVariables(
   return keys_to_marginalize;
 }
 
+void AdaptiveLagMarginalization::resetSmoother() {
+  smoother_ = nullptr;
+  resetISAM2();
+}
+
 void AdaptiveLagMarginalization::bindSmoother(
     const TemporalSmoother* temporal_smoother) {
   ASSERT(smoother_ == nullptr || smoother_ == temporal_smoother);

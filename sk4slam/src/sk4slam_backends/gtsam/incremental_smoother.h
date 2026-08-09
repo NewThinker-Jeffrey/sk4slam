@@ -430,6 +430,8 @@ class AdaptiveLagMarginalization : public AdaptiveMarginalization {
 
   ~AdaptiveLagMarginalization() override = default;
 
+  void resetSmoother();
+
   void bindSmoother(const TemporalSmoother* temporal_smoother);
 
  protected:
@@ -461,7 +463,7 @@ class AdaptiveLagMarginalization : public AdaptiveMarginalization {
       const std::function<bool(const Key&)>& f,
       std::unordered_set<Key>* visited_keys) const;
 
- private:
+ protected:
   /// The min guaranteed lag of the smoother. Negative values are interpreted as
   /// infinity (i.e. never marginalize).
   Lag smoother_lag_;

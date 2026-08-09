@@ -53,8 +53,25 @@ class ImuHandler {
         7.814727903251179};  ///< Chi2 threshold for const velocity motion
                              ///< detection. The default is Chi2(0.95, 3).
 
-    double acc_range = 36.0;    ///< Accelerometer range in m/s^2.
-    double gyro_range = 999.0;  ///< Gyroscope range in deg/s.
+    double acc_range = 36.0;  ///< Accelerometer range in m/s^2. Negative value
+                              ///< means infinite range.
+    double gyro_range = 999.0;  ///< Gyroscope range in deg/s. Negative value
+                                ///< means infinite range.
+    double ex_range_acc_sigma =
+        -1.;  ///< Sigma (discret-time) for accel measurements exceeding range.
+              ///< Negative value means no correction.
+    double ex_range_gyro_sigma =
+        -1.;  ///< Sigma (discret-time) for gyro measurements exceeding range.
+              ///< Negative value means no correction.
+    double sampling_rate =
+        -1.;  ///< Sampling rate in Hz. Only used to compute the discretized
+              ///< noise sigmas. If negative, the sampling rate will be
+              ///< inferred from the data.
+
+    bool correct_sigmas = true;  ///< Whether to correct the noise sigmas based
+                                 ///< on the motion filter results.
+    bool integrate_filtered_data =
+        true;  ///< Whether to integrate the filtered data.
 
     bool auto_clear_old_cache = true;  ///< Automatically clear old cache when
                                        ///< new data segment is added.
@@ -72,6 +89,11 @@ class ImuHandler {
       CONFIG_OPTIONAL_MEM(const_velocity_chi2_thr);
       CONFIG_OPTIONAL_MEM(acc_range);
       CONFIG_OPTIONAL_MEM(gyro_range);
+      CONFIG_OPTIONAL_MEM(ex_range_acc_sigma);
+      CONFIG_OPTIONAL_MEM(ex_range_gyro_sigma);
+      CONFIG_OPTIONAL_MEM(sampling_rate);
+      CONFIG_OPTIONAL_MEM(correct_sigmas);
+      CONFIG_OPTIONAL_MEM(integrate_filtered_data);
       CONFIG_OPTIONAL_MEM(auto_clear_old_cache);
       CONFIG_OPTIONAL_MEM(cache_duration);
     }

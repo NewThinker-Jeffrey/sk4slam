@@ -161,6 +161,17 @@ class ImuIntegration {
   const Result& update(
       const Timestamp& timestamp, const Vector3d& gyro,
       const Vector3d& accel = Vector3d::Zero());
+  const Result& update(
+      const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel,
+      const Vector3d& override_gyro_discret_vars,
+      const Vector3d& override_accel_discret_vars);
+
+  Vector3d getGyroDiscretVars(
+      const Vector3d& gyro,
+      double dt = 1e6 /*Defaults to a large value*/) const;
+  Vector3d getAccelDiscretVars(
+      const Vector3d& accel,
+      double dt = 1e6 /*Defaults to a large value*/) const;
 
   /// @brief Repropagate the integrated result using new biases and new initial
   /// state.
@@ -290,7 +301,15 @@ class ImuIntegration {
   virtual Result integrate(
       const Result& prev_result, double dt, const Vector3d& prev_gyro,
       const Vector3d& new_gyro, const Vector3d& prev_accel,
-      const Vector3d& new_accel);
+      const Vector3d& new_accel, const Vector3d& prev_gyro_discret_vars,
+      const Vector3d& new_gyro_discret_vars,
+      const Vector3d& prev_accel_discret_vars,
+      const Vector3d& new_accel_discret_vars);
+
+  Result integrate(
+      const Result& prev_result, double dt, const Vector3d& mean_gyro,
+      const Vector3d& mean_accel, const Vector3d& mean_gyro_discret_vars,
+      const Vector3d& mean_accel_discret_vars);
 
   struct DeltaToNext;
   bool retrieveState(
@@ -343,12 +362,15 @@ class ImuIntegration {
   /// @param result The new IMU integration result
   void cache(
       const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel,
+      const Vector3d& gyro_discret_vars, const Vector3d& accel_discret_vars,
       Result result);
 
   void reset() {
     timestamps_.clear();
     accel_measurements_.clear();
+    accel_discret_vars_.clear();
     gyro_measurements_.clear();
+    gyro_discret_vars_.clear();
     results_.clear();
     initial_time_ = -1;
   }
@@ -368,9 +390,13 @@ class ImuIntegration {
   std::vector<Timestamp>
       timestamps_;  ///< The timestamps of the IMU measurements
   std::vector<Vector3d>
-      accel_measurements_;                   ///< The accelerometer measurements
+      accel_measurements_;  ///< The accelerometer measurements
+  std::vector<Vector3d>
+      accel_discret_vars_;  ///< The discretized accelerometer noise variances
   std::vector<Vector3d> gyro_measurements_;  ///< The gyro measurements
-  std::vector<Result> results_;              ///< The IMU integration results
+  std::vector<Vector3d>
+      gyro_discret_vars_;        ///< The discretized gyro noise variances
+  std::vector<Result> results_;  ///< The IMU integration results
 };
 
 /// @brief  A wrapper of ImuIntegration that provides a more convenient
