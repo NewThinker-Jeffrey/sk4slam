@@ -6,6 +6,19 @@
 
 namespace sk4slam {
 
+ImuIntegration::Options ImuHandler::defaultIntegrationOptions() {
+  auto options = ImuIntegration::Options::PreIntegration();
+  options.cache_intermediate_results = true;
+  return options;
+}
+
+std::shared_ptr<ImuIntegration> ImuHandler::createImuIntegration(
+    const ImuIntegration::Options& options, const ImuSigmas& sigmas,
+    const Vector3d& gyro_bias, const Vector3d& accel_bias) const {
+  return std::make_shared<ImuIntegration>(
+      options, sigmas, gyro_bias, accel_bias);
+}
+
 bool ImuHandler::isImuDataReady(
     const ImuDataBuffer& imu_data_buf, double required_imu_time) const {
   const UniqueId& imu_uid = imu_uid_;
@@ -234,8 +247,7 @@ void ImuHandler::runPolynomialMotionFilter(
 std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
     const ImuDataBuffer& imu_data_buf, double start_time, double end_time,
     const Eigen::Vector3d& gyro_bias, const Eigen::Vector3d& accel_bias,
-    const Vector3d& gravity_in_start_frame, const Eigen::MatrixXd& bias_cov_6x6,
-    bool state_only) const {
+    const ImuIntegration::Options& integration_options) const {
   auto segment = std::make_shared<Segment>();
   segment->start_time = start_time;
   segment->end_time = end_time;
@@ -261,6 +273,11 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
         start_time, end_time);
     return nullptr;
   }
+  for (size_t i = 1; i < segment->data.size(); ++i) {
+    segment->largest_data_gap = std::max(
+        segment->largest_data_gap,
+        segment->data[i].timestamp - segment->data[i - 1].timestamp);
+  }
 
   // First run the motion filter to correct the IMU data and sigmas
   runMotionFilter(segment.get(), options_.sampling_rate);
@@ -268,35 +285,22 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
   // If the time gap between two consecutive IMU data is too large, the
   // integration will be inaccurate. We fill the gaps by interpolating the
   // IMU data to avoid this.
-  std::vector<ImuData> prop_data;
-  if (options_.integrate_filtered_data) {
-    prop_data = ImuData::fillDataGaps(segment->filtered_data, 0.011);
-  } else {
-    prop_data = ImuData::fillDataGaps(segment->data, 0.011);
-  }
-  ASSERT(prop_data.size() >= 2);
+  const std::vector<ImuData>& integration_source =
+      options_.integrate_filtered_data ? segment->filtered_data : segment->data;
+  segment->propagation_data_ =
+      options_.large_data_gap_threshold > 0.0
+          ? ImuData::fillDataGaps(
+                integration_source, options_.large_data_gap_threshold)
+          : integration_source;
+  ASSERT(segment->propagation_data_.size() >= 2);
 
   // Feed data to the imu preintegrator
 
   // Prepare the IMU preintegrator
   const ImuSigmas& imu_sigmas = segment->corrected_sigmas;
-  auto imu_preint_options = ImuIntegration::Options::PreIntegration();
-  imu_preint_options.cache_intermediate_results = true;
-  if (state_only) {
-    imu_preint_options = ImuIntegration::Options::StateBuffer();
-  }
-  auto imu_preint = std::make_shared<ImuIntegration>(
-      imu_preint_options, imu_sigmas, gyro_bias, accel_bias);
-
-  // Prepare flags and values needed to analyze the motion (whether it's
-  // zero-rotation, or constant-velocity).
-  ASSERT(bias_cov_6x6.rows() == bias_cov_6x6.cols());
-  ASSERT(bias_cov_6x6.rows() == 0 || bias_cov_6x6.rows() == 6);
-  bool is_zero_rotation =
-      (!state_only && bias_cov_6x6.rows() == 6 && segment->isGyroReliable());
-  bool is_const_velocity =
-      (!state_only && bias_cov_6x6.rows() == 6 && segment->isGyroReliable() &&
-       segment->isAccReliable());
+  auto imu_preint = createImuIntegration(
+      integration_options, imu_sigmas, gyro_bias, accel_bias);
+  ASSERT(imu_preint);
 
   double ex_range_gyro_var = -1.;
   double ex_range_acc_var = -1.;
@@ -310,12 +314,10 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
         (options_.ex_range_acc_sigma * options_.ex_range_acc_sigma);
   }
 
-  // PreIntegrate the IMU data and analyze the motion
-  size_t data_i = 0;
-  std::vector<double> const_velocity_chi2s,
-      zero_rotation_chi2s;  // For debugging
+  // Pre-integrate the IMU data. Motion classification is intentionally kept
+  // separate because it additionally depends on the caller's state estimate.
   double prev_time = -1;
-  for (const auto& imu_data : prop_data) {
+  for (const auto& imu_data : segment->propagation_data_) {
     const auto& t = imu_data.timestamp;
     if (t <= prev_time) {
       LOGD(
@@ -352,63 +354,95 @@ std::shared_ptr<const ImuHandler::Segment> ImuHandler::processNewSegment(
     }
 
     imu_preint->update(t, wm, am, wm_vars, am_vars);
-
-    if (data_i > 0 && is_const_velocity) {
-      Eigen::MatrixXd vel_cov =
-          imu_preint->getLatestResult()
-              .process_noise_cov.bottomRightCorner<3, 3>();
-      const auto& J_bias = imu_preint->getLatestResult().J_bias.bottomRows<3>();
-      vel_cov += J_bias * bias_cov_6x6 * J_bias.transpose();
-      Eigen::Vector3d vel =
-          imu_preint->retrieveLatestState(true, 9.81, gravity_in_start_frame)
-              .v();
-      double chi2 = vel.dot(vel_cov.llt().solve(vel));
-      const_velocity_chi2s.push_back(chi2);
-      if (chi2 > options_.const_velocity_chi2_thr) {
-        is_const_velocity = false;
-      }
-    }
-
-    if (data_i > 0 && is_zero_rotation) {
-      Eigen::MatrixXd rot_cov =
-          imu_preint->getLatestResult().process_noise_cov.topLeftCorner<3, 3>();
-      const auto& J_bias =
-          imu_preint->getLatestResult().J_bias.topLeftCorner<3, 3>();
-      rot_cov +=
-          J_bias * bias_cov_6x6.topLeftCorner<3, 3>() * J_bias.transpose();
-
-      Rot3d rot = imu_preint->retrieveLatestState(false).R();
-      Eigen::Vector3d rot_vec = SO3d::Log(rot);
-      double chi2 = rot_vec.dot(rot_cov.llt().solve(rot_vec));
-      zero_rotation_chi2s.push_back(chi2);
-      if (chi2 > options_.zero_rotation_chi2_thr) {
-        is_zero_rotation = false;
-      }
-    }
-
-    ++data_i;
   }
-  LOGD(
-      "ImuHandler::processNewSegment:  const_velocity_chi2s = %s",
-      toStr(const_velocity_chi2s).c_str());
-  LOGD(
-      "ImuHandler::processNewSegment:  zero_rotation_chi2s = %s",
-      toStr(zero_rotation_chi2s).c_str());
 
-  // Save the integration and motion analysis results
+  // Save the state-independent integration result.
   segment->pre_integration = std::move(imu_preint);
-  segment->is_zero_rotation = is_zero_rotation;
-  segment->is_const_velocity = is_const_velocity;
 
-  // Cache and return the processed segment
-  cacheNew(segment);
   return segment;
 }
 
+ImuHandler::SpecialMotionResult ImuHandler::detectSpecialMotion(
+    const Segment& segment, const Vector3d& gravity_in_start_frame,
+    const Eigen::MatrixXd& bias_cov_6x6) const {
+  SpecialMotionResult motion;
+  if (!segment.pre_integration) {
+    return motion;
+  }
+  const auto& integration_options = segment.pre_integration->getOptions();
+  if (!integration_options.cache_intermediate_results ||
+      !integration_options.compute_process_noise_cov ||
+      !integration_options.compute_jacobian_wrt_bias) {
+    return motion;
+  }
+  if (bias_cov_6x6.rows() != 6 || bias_cov_6x6.cols() != 6) {
+    return motion;
+  }
+
+  motion.is_zero_rotation = segment.isGyroReliable();
+  motion.is_const_velocity = !integration_options.rotation_only &&
+                             segment.isGyroReliable() &&
+                             segment.isAccReliable();
+  std::vector<double> const_velocity_chi2s;
+  std::vector<double> zero_rotation_chi2s;
+  for (size_t i = 1; i < segment.propagation_data_.size(); ++i) {
+    const double timestamp = segment.propagation_data_[i].timestamp;
+    const ImuIntegration::Result* integration_result =
+        segment.pre_integration->findResult(timestamp);
+    if (!integration_result) {
+      motion = {};
+      break;
+    }
+
+    if (motion.is_const_velocity) {
+      Eigen::MatrixXd vel_cov =
+          integration_result->process_noise_cov.bottomRightCorner<3, 3>();
+      const auto J_bias = integration_result->J_bias.bottomRows<3>();
+      vel_cov += J_bias * bias_cov_6x6 * J_bias.transpose();
+      ImuIntegration::State state;
+      if (!segment.pre_integration->retrieveState(
+              timestamp, &state, true, 9.81, gravity_in_start_frame)) {
+        motion = {};
+        break;
+      }
+      const double chi2 = state.v().dot(vel_cov.llt().solve(state.v()));
+      const_velocity_chi2s.push_back(chi2);
+      if (chi2 > options_.const_velocity_chi2_thr) {
+        motion.is_const_velocity = false;
+      }
+    }
+
+    if (motion.is_zero_rotation) {
+      Eigen::MatrixXd rot_cov =
+          integration_result->process_noise_cov.topLeftCorner<3, 3>();
+      const auto J_bias = integration_result->J_bias.topLeftCorner<3, 3>();
+      rot_cov +=
+          J_bias * bias_cov_6x6.topLeftCorner<3, 3>() * J_bias.transpose();
+      const Eigen::Vector3d rot_vec = SO3d::Log(integration_result->state.R());
+      const double chi2 = rot_vec.dot(rot_cov.llt().solve(rot_vec));
+      zero_rotation_chi2s.push_back(chi2);
+      if (chi2 > options_.zero_rotation_chi2_thr) {
+        motion.is_zero_rotation = false;
+      }
+    }
+  }
+
+  LOGD(
+      "ImuHandler::detectSpecialMotion: const_velocity_chi2s = %s",
+      toStr(const_velocity_chi2s).c_str());
+  LOGD(
+      "ImuHandler::detectSpecialMotion: zero_rotation_chi2s = %s",
+      toStr(zero_rotation_chi2s).c_str());
+  return motion;
+}
+
 bool ImuHandler::Segment::predictRotation(
-    double time, Rot3d* predicted_rot, const Rot3d& start_rot) const {
+    double time, Rot3d* predicted_rot, const Rot3d& start_rot,
+    const Vector3d& delta_gyro_bias, const Vector3d& delta_acc_bias) const {
   ImuIntegration::State state;
-  bool success = pre_integration->retrieveState(time, &state, false);
+  bool success = pre_integration->retrieveState(
+      time, &state, false, 9.81, Vector3d(0, 0, 1), delta_gyro_bias,
+      delta_acc_bias);
   if (!success) {
     return false;
   }
@@ -420,11 +454,14 @@ bool ImuHandler::Segment::predictRotation(
   return true;
 }
 
-std::unordered_map<double, Rot3d> ImuHandler::Segment::predictRotations(
-    const std::vector<double> times, const Rot3d& start_rot) const {
-  std::unordered_map<double, ImuIntegration::State> states =
-      pre_integration->retrieveStates(times, false);
-  std::unordered_map<double, Rot3d> rotations;
+std::map<double, Rot3d> ImuHandler::Segment::predictRotations(
+    const std::vector<double> times, const Rot3d& start_rot,
+    const Vector3d& delta_gyro_bias, const Vector3d& delta_acc_bias) const {
+  std::map<double, ImuIntegration::State> states =
+      pre_integration->retrieveStates(
+          times, false, 9.81, Vector3d(0, 0, 1), delta_gyro_bias,
+          delta_acc_bias);
+  std::map<double, Rot3d> rotations;
   for (const auto& [time, state] : states) {
     rotations[time] = start_rot * state.R();
   }
@@ -434,13 +471,15 @@ std::unordered_map<double, Rot3d> ImuHandler::Segment::predictRotations(
 bool ImuHandler::Segment::predictState(
     double time, Pose3d* predicted_pose, Eigen::Vector3d* predicted_vel,
     const Pose3d& start_pose, const Eigen::Vector3d& start_vel,
-    bool apply_gravity) const {
+    bool apply_gravity, const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias) const {
   const Rot3d& start_rot = start_pose.rotation();
   Eigen::Vector3d gravity_in_start_frame =
       start_rot.matrix().transpose().col(2);
   ImuIntegration::State state;
   bool success = pre_integration->retrieveState(
-      time, &state, apply_gravity, 9.81, gravity_in_start_frame);
+      time, &state, apply_gravity, 9.81, gravity_in_start_frame,
+      delta_gyro_bias, delta_acc_bias);
   if (!success) {
     return false;
   }
@@ -459,17 +498,18 @@ bool ImuHandler::Segment::predictState(
   return true;
 }
 
-std::unordered_map<double, ImuIntegration::State>
-ImuHandler::Segment::predictStates(
+std::map<double, ImuIntegration::State> ImuHandler::Segment::predictStates(
     const std::vector<double> times, const Pose3d& start_pose,
     const Eigen::Vector3d& start_vel, bool apply_gravity,
-    bool trasform_velocity) const {
+    bool trasform_velocity, const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias) const {
   const Rot3d& start_rot = start_pose.rotation();
   Eigen::Vector3d gravity_in_start_frame =
       start_rot.matrix().transpose().col(2);
-  std::unordered_map<double, ImuIntegration::State> states =
+  std::map<double, ImuIntegration::State> states =
       pre_integration->retrieveStates(
-          times, apply_gravity, 9.81, gravity_in_start_frame);
+          times, apply_gravity, 9.81, gravity_in_start_frame, delta_gyro_bias,
+          delta_acc_bias);
 
   // Transform the states to the start frame
   for (auto& [time, state] : states) {

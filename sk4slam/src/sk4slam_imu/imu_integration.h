@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 #include "sk4slam_imu/imu_model.h"
 #include "sk4slam_pose/pose.h"
 
@@ -99,6 +101,50 @@ class ImuIntegration {
     }
   };
 
+  /// @brief Compute the inertial state change from @p state0 to @p state1.
+  /// @details Both input states must be raw inertial states expressed in the
+  /// same inertial reference frame. They must not have gravity or any other
+  /// external acceleration field applied. Bias correction is allowed, but it
+  /// must use the same convention for both states. The returned state is
+  /// expressed in the inertial frame colocated and aligned with @p state0 and
+  /// moving at its constant velocity. Its translation excludes the
+  /// displacement caused by that reference-frame velocity during @p dt, so it
+  /// can be composed as
+  /// `p1 = p0 + v0 * dt + R0 * relative_state.p()`.
+  /// @param state0 Inertial state at the beginning of the interval.
+  /// @param state1 Inertial state at the end of the interval.
+  /// @param dt Duration from state0 to state1.
+  static State computeRelativeState(
+      const State& state0, const State& state1, double dt);
+
+  /// @brief Inverts a relative inertial state.
+  /// @details Given a relative state change from A to B, i.e. the state of B
+  /// as seen from the inertial frame colocated and aligned with A and moving
+  /// at its constant velocity (typically the output of
+  /// computeRelativeState(A, B, dt_ab)), returns the inverse change from B to
+  /// A. @p dt_ab is the duration of the original interval (t_b - t_a); the
+  /// inverted interval lasts -dt_ab. The duration is required because the
+  /// relative translation embeds the reference-frame velocity displacement
+  /// removed by computeRelativeState(). The result satisfies
+  /// `inverseRelativeState(state_ab, dt_ab)` ==
+  /// `computeRelativeState(state_b, state_a, -dt_ab)`.
+  static State inverseRelativeState(const State& state_ab, double dt_ab);
+
+  /// @brief Composes two relative inertial states.
+  /// @details Given @p state_ab (B relative to A over [t_a, t_b]) and
+  /// @p state_bc (C relative to B over [t_b, t_c]), returns state_ac (C
+  /// relative to A over [t_a, t_c]). @p dt_bc is the duration of the second
+  /// interval (t_c - t_b). The duration is required because the composed
+  /// translation picks up the velocity displacement v_ab * dt_bc of the first
+  /// interval's relative velocity over the second interval. This mirrors the
+  /// composition identity of computeRelativeState(). A typical use is
+  /// composing the pre-integrations of adjacent segments AB and BC to obtain
+  /// the AC integration directly. The result satisfies
+  /// `composeRelativeStates(state_ab, state_bc, dt_bc)` ==
+  /// `computeRelativeState(state_a, state_c, dt_ab + dt_bc)`.
+  static State composeRelativeStates(
+      const State& state_ab, const State& state_bc, double dt_bc);
+
   /// @brief  We use separate-left perturbation for the
   /// pose part, and vector perturbation for the velocity part.
   using StateRetraction = ProductRetraction<
@@ -108,6 +154,9 @@ class ImuIntegration {
   /// @brief  Defines the IMU integration result
   struct Result {
     State state;  ///< The integrated state
+    Vector3d angular_velocity =
+        Vector3d::Zero();  ///< Bias-corrected gyroscope observation at the
+                           ///< result timestamp, expressed in the IMU frame.
     MatrixXd
         J_state;      ///< The jacobian of the integrated state w.r.t. the
                       ///< initial state. If the jacobian is computed, it size
@@ -120,10 +169,10 @@ class ImuIntegration {
                                  ///< size is 3x3 when rotation_only is true,
                                  ///< and 9x9 otherwise.
     explicit Result(const State& set_state = State())
-        : J_state(MatrixXd()),
+        : state(set_state),
+          J_state(MatrixXd()),
           J_bias(MatrixXd()),
-          process_noise_cov(MatrixXd()),
-          state(set_state) {}
+          process_noise_cov(MatrixXd()) {}
   };
 
  public:
@@ -221,6 +270,10 @@ class ImuIntegration {
     return accel_bias_;
   }
 
+  const Options& getOptions() const {
+    return options_;
+  }
+
   const Result& getLatestResult() const {
     return results_.back();
   }
@@ -258,7 +311,8 @@ class ImuIntegration {
   /// Options::cache_intermediate_results). Interpolation will be performed
   /// if the timestamp is not exactly equal to one of the cached timestamps.
   /// @param timestamp The timestamp at which to retrieve the state
-  /// @param state[out] The state at the given timestamp
+  /// @param state[out] The state at the given timestamp. May be null when only
+  /// checking whether the timestamp can be queried.
   /// @param apply_gravity Whether to apply gravity to the original inertial
   /// reference frame (which makes it a non-inertial reference frame, i.e. an
   /// accelerated reference frame). If true, the output state will be expressed
@@ -266,18 +320,61 @@ class ImuIntegration {
   /// @param gravity_magnitude The magnitude of gravity to apply (default: 9.81)
   /// @param gravity_direction_in_ref The direction of gravity in the
   /// inertial reference frame (default: (0, 0, 1))
+  /// @param delta_gyro_bias Gyroscope-bias change relative to the bias used
+  /// for integration. A first-order correction is applied when its Jacobian
+  /// is available.
+  /// @param delta_acc_bias Accelerometer-bias change relative to the bias used
+  /// for integration. A first-order correction is applied when its Jacobian
+  /// is available.
   /// @return true if the state was successfully retrieved, false otherwise
   /// (e.g. if the timestamp is before the first cached timestamp
   /// or after the last cached timestamp)
   bool retrieveState(
       const Timestamp& timestamp, State* state, bool apply_gravity = true,
       double gravity_magnitude = 9.81,
-      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1)) const;
+      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1),
+      const Vector3d& delta_gyro_bias = Vector3d::Zero(),
+      const Vector3d& delta_acc_bias = Vector3d::Zero()) const;
 
-  std::unordered_map<Timestamp, State> retrieveStates(
+  std::map<Timestamp, State> retrieveStates(
       const std::vector<Timestamp>& timestamps, bool apply_gravity = true,
       double gravity_magnitude = 9.81,
-      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1)) const;
+      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1),
+      const Vector3d& delta_gyro_bias = Vector3d::Zero(),
+      const Vector3d& delta_acc_bias = Vector3d::Zero()) const;
+
+  /// Retrieve the bias-corrected angular velocity at a timestamp. Linear
+  /// interpolation is used between cached integration results.
+  bool retrieveAngularVelocity(
+      const Timestamp& timestamp, Vector3d* angular_velocity,
+      const Vector3d& delta_gyro_bias = Vector3d::Zero()) const;
+
+  /// Batch version of retrieveAngularVelocity(). Timestamps that cannot be
+  /// queried are omitted from the returned map.
+  std::map<Timestamp, Vector3d> retrieveAngularVelocities(
+      const std::vector<Timestamp>& timestamps,
+      const Vector3d& delta_gyro_bias = Vector3d::Zero()) const;
+
+  /// Retrieve the inertial state at @p timestamp relative to @p ref_time.
+  /// Both accumulated states are first retrieved without gravity, then rebased
+  /// with @ref computeRelativeState. Gravity is applied to the relative state
+  /// only after rebasing. Consequently, @p gravity_direction_in_ref is
+  /// expressed in the inertial frame defined at @p ref_time.
+  bool retrieveRelativeState(
+      const Timestamp& ref_time, const Timestamp& timestamp, State* state,
+      bool apply_gravity = true, double gravity_magnitude = 9.81,
+      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1),
+      const Vector3d& delta_gyro_bias = Vector3d::Zero(),
+      const Vector3d& delta_acc_bias = Vector3d::Zero()) const;
+
+  /// Retrieve inertial states relative to @p ref_time. Timestamps that cannot
+  /// be queried are omitted, consistently with @ref retrieveStates.
+  std::map<Timestamp, State> retrieveRelativeStates(
+      const Timestamp& ref_time, const std::vector<Timestamp>& timestamps,
+      bool apply_gravity = true, double gravity_magnitude = 9.81,
+      const Vector3d& gravity_direction_in_ref = Vector3d(0, 0, 1),
+      const Vector3d& delta_gyro_bias = Vector3d::Zero(),
+      const Vector3d& delta_acc_bias = Vector3d::Zero()) const;
 
   /// Find the IMU integration result at a given timestamp. This function
   /// is only valid when the IMU integration result is cached (see @ref
@@ -316,8 +413,18 @@ class ImuIntegration {
       int begin_idx, const Timestamp& timestamp, State* state,
       bool apply_gravity, double gravity_magnitude,
       const Vector3d& gravity_direction_in_ref,
-      std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>>*
-          cached_deltas = nullptr) const;
+      bool correct_bias,
+      const Vector3d& delta_gyro_bias = Vector3d::Zero(),
+      const Vector3d& delta_acc_bias = Vector3d::Zero(),
+      DeltaToNext* cached_delta = nullptr) const;
+
+  void applyBiasCorrection(
+      const Result& result, const Vector3d& delta_gyro_bias,
+      const Vector3d& delta_acc_bias, State* state) const;
+
+  bool shouldApplyBiasCorrection(
+      const Vector3d& delta_gyro_bias,
+      const Vector3d& delta_acc_bias) const;
 
   /// @brief  Interpolate between two inertial states
   /// @param t The time at which to interpolate

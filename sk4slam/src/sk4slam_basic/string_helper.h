@@ -107,7 +107,7 @@ std::string __containerToStr(
     if (!is_first) {
       oss << ", ";
     }
-    oss << t;
+    oss << toStr(t, precision);
     is_first = false;
   }
   oss << "}";
@@ -124,7 +124,7 @@ std::string __mapToStr(const Map& map, Precision precision = Precision()) {
     if (!is_first) {
       oss << ", ";
     }
-    oss << t.first << " : " << t.second;
+    oss << toStr(t.first, precision) << " : " << toStr(t.second, precision);
     is_first = false;
   }
   oss << "}";

@@ -141,14 +141,13 @@ class Pose3Buf_ {
   /// between the timestamp and its nearest neighbor is greater than this
   /// threshold, interpolation will be skipped and `false` will be returned.
   /// Default is -1, meaning interpolation is always allowed.
-  /// @param left_neighbor[out] The left neighbor of the pose in the buffer. If
-  /// interpolation or extrapolation is used, this will be the pose with the
-  /// smaller timestamp. If the exact timestamp is found or there is only one
-  /// pose in the buffer, this will be the same as the pose.
-  /// @param right_neighbor[out] The right neighbor of the pose in the buffer.
-  /// If interpolation or extrapolation is used, this will be the pose with the
-  /// larger timestamp. If the exact timestamp is found or there is only one
-  /// pose in the buffer, this will be the same as the pose.
+  /// @param left_neighbor[out] The left endpoint of the supporting interval.
+  /// @param right_neighbor[out] The right endpoint of the supporting interval.
+  /// If the buffer has more than one pose, the two returned neighbors are
+  /// always adjacent entries. An exact match at an interior entry uses that
+  /// entry as the left endpoint; an exact match at the last entry uses it as
+  /// the right endpoint. Queries outside the buffer use the first or last
+  /// interval. If the buffer has only one pose, both neighbors equal that pose.
   /// @return `true` if the pose is successfully retrieved, `false` otherwise.
   bool get(
       const Timestamp& timestamp, Pose* pose,
@@ -294,13 +293,25 @@ class Pose3Buf_ {
         *right_neighbor = posebuf_[posebuf_.size() - 1];
       }
     } else if (posebuf_[begin_idx].timestamp == timestamp) {
-      // Good luck! We found the exact timestamp
+      // Good luck! We found the exact timestamp. For buffers with more than
+      // one pose, still return a supporting interval with adjacent entries.
+      // This lets callers distinguish exact matches while reusing the same
+      // interval for derivative estimation.
       *pose = posebuf_[begin_idx].pose;
-      if (left_neighbor) {
-        *left_neighbor = posebuf_[begin_idx];
-      }
-      if (right_neighbor) {
-        *right_neighbor = posebuf_[begin_idx];
+      if (begin_idx + 1 < posebuf_.size()) {
+        if (left_neighbor) {
+          *left_neighbor = posebuf_[begin_idx];
+        }
+        if (right_neighbor) {
+          *right_neighbor = posebuf_[begin_idx + 1];
+        }
+      } else {
+        if (left_neighbor) {
+          *left_neighbor = posebuf_[begin_idx - 1];
+        }
+        if (right_neighbor) {
+          *right_neighbor = posebuf_[begin_idx];
+        }
       }
     } else if (begin_idx == 0) {
       // The timestamp is older than the first timestamp, but within a

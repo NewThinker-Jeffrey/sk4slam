@@ -189,6 +189,61 @@ class TestImuIntegration : public testing::Test {
     ASSERT_LE(relative_approx_error, 1e-3);
   }
 
+  void testRelativeStateOps() {
+    auto c = createContext();
+    const double t_a = c->timestamps.front();
+    const double t_b = c->timestamps[c->timestamps.size() / 2];
+    const double t_c = c->timestamps.back();
+
+    // The absolute states must be raw inertial states without gravity, as
+    // required by computeRelativeState().
+    const ImuIntegration::State& state_a = c->initial_state;
+    ImuIntegration::State state_b;
+    ImuIntegration::State state_c;
+    ASSERT_TRUE(
+        c->integration.retrieveState(t_b, &state_b, false /*apply_gravity*/));
+    ASSERT_TRUE(
+        c->integration.retrieveState(t_c, &state_c, false /*apply_gravity*/));
+
+    const double dt_ab = t_b - t_a;
+    const double dt_bc = t_c - t_b;
+    const ImuIntegration::State state_ab =
+        ImuIntegration::computeRelativeState(state_a, state_b, dt_ab);
+    const ImuIntegration::State state_bc =
+        ImuIntegration::computeRelativeState(state_b, state_c, dt_bc);
+    const ImuIntegration::State state_ac =
+        ImuIntegration::computeRelativeState(state_a, state_c, dt_ab + dt_bc);
+
+    // Inverse matches the backward relative state.
+    const ImuIntegration::State state_ba =
+        ImuIntegration::inverseRelativeState(state_ab, dt_ab);
+    const ImuIntegration::State state_ba_ref =
+        ImuIntegration::computeRelativeState(state_b, state_a, -dt_ab);
+    ASSERT_TRUE(state_ba.isApprox(state_ba_ref, 1e-6));
+
+    // Composition of adjacent intervals matches the direct relative state.
+    const ImuIntegration::State state_ac_composed =
+        ImuIntegration::composeRelativeStates(state_ab, state_bc, dt_bc);
+    ASSERT_TRUE(state_ac_composed.isApprox(state_ac, 1e-6));
+
+    // Composing with the inverse yields the identity state.
+    const ImuIntegration::State state_identity =
+        ImuIntegration::composeRelativeStates(
+            state_ab, ImuIntegration::inverseRelativeState(state_ab, dt_ab),
+            -dt_ab);
+    ASSERT_TRUE(state_identity.isApprox(ImuIntegration::State(), 1e-6));
+
+    // Inversion distributes over composition:
+    // inverse(ab ∘ bc) == inverse(bc) ∘ inverse(ab) with the swapped dt.
+    const ImuIntegration::State state_ca =
+        ImuIntegration::inverseRelativeState(state_ac, dt_ab + dt_bc);
+    const ImuIntegration::State state_ca_composed =
+        ImuIntegration::composeRelativeStates(
+            ImuIntegration::inverseRelativeState(state_bc, dt_bc),
+            ImuIntegration::inverseRelativeState(state_ab, dt_ab), dt_ab);
+    ASSERT_TRUE(state_ca.isApprox(state_ca_composed, 1e-6));
+  }
+
   void testCov() {
     Eigen::MatrixXd random_mat = Eigen::MatrixXd::Random(15, 15);
     Eigen::MatrixXd prior_cov = random_mat * random_mat.transpose();
@@ -244,5 +299,9 @@ TEST_F(TestImuIntegration, testJacobian) {
 TEST_F(TestImuIntegration, testCov) {
   testCov();
 }
+
+// TEST_F(TestImuIntegration, testRelativeStateOps) {
+//   testRelativeStateOps();
+// }
 
 SK4SLAM_UNITTEST_ENTRYPOINT

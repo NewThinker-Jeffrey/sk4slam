@@ -54,6 +54,47 @@ ImuIntegration::Options ImuIntegration::Options::StateBuffer() {
   return options;
 }
 
+ImuIntegration::State ImuIntegration::computeRelativeState(
+    const State& state0, const State& state1, double dt) {
+  State relative_state;
+  const Rot3d ref_to_state0 = state0.R().inverse();
+  relative_state.R() = ref_to_state0 * state1.R();
+  relative_state.p() =
+      ref_to_state0 * (state1.p() - state0.p() - state0.v() * dt);
+  relative_state.v() = ref_to_state0 * (state1.v() - state0.v());
+  return relative_state;
+}
+
+ImuIntegration::State ImuIntegration::inverseRelativeState(
+    const State& state_ab, double dt_ab) {
+  // state_ab = (R_a^-1 R_b, R_a^-1 (p_b - p_a - v_a dt_ab),
+  //             R_a^-1 (v_b - v_a)).
+  // Inverting the reference frame to B flips the interval to [-dt_ab], so
+  // p_ba = R_b^-1 (p_a - p_b - v_b (-dt_ab))
+  //      = R_ab^-1 (v_ab dt_ab - p_ab).
+  State state_ba;
+  const Rot3d ref_to_state_b = state_ab.R().inverse();
+  state_ba.R() = ref_to_state_b;
+  state_ba.p() = ref_to_state_b * (state_ab.v() * dt_ab - state_ab.p());
+  state_ba.v() = -(ref_to_state_b * state_ab.v());
+  return state_ba;
+}
+
+ImuIntegration::State ImuIntegration::composeRelativeStates(
+    const State& state_ab, const State& state_bc, double dt_bc) {
+  // state_ac = (R_ab R_bc, p_ab + R_ab p_bc + v_ab dt_bc,
+  //             v_ab + R_ab v_bc).
+  // The v_ab dt_bc term restores the displacement removed from p_ab by
+  // computeRelativeState()'s reference-frame velocity over the second
+  // interval [t_b, t_c].
+  State state_ac;
+  state_ac.R() = state_ab.R() * state_bc.R();
+  state_ac.p() =
+      state_ab.p() + state_ab.R() * state_bc.p() + state_ab.v() * dt_bc;
+  state_ac.v() = state_ab.v() + state_ab.R() * state_bc.v();
+  return state_ac;
+}
+
 const ImuIntegration::Result& ImuIntegration::update(
     const Timestamp& timestamp, const Vector3d& gyro, const Vector3d& accel,
     const Vector3d& gyro_discret_vars, const Vector3d& accel_discret_vars) {
@@ -66,6 +107,7 @@ const ImuIntegration::Result& ImuIntegration::update(
     gyro_discret_vars_.push_back(gyro_discret_vars);
     accel_discret_vars_.push_back(accel_discret_vars);
     results_.emplace_back(Result(initial_state_));
+    results_.back().angular_velocity = gyro - gyro_bias_;
     return results_.back();
   } else if (timestamp <= timestamps_.back()) {
     LOGW(
@@ -149,6 +191,7 @@ const ImuIntegration::Result& ImuIntegration::repropagate(
   accel_bias_ = new_accel_bias;
   initial_state_ = new_initial_state;
   results_[0] = Result(initial_state_);
+  results_[0].angular_velocity = gyro_measurements_[0] - gyro_bias_;
 
   for (size_t i = 1; i < timestamps_.size(); ++i) {
     const Timestamp& last_time = timestamps_[i - 1];
@@ -166,7 +209,7 @@ const ImuIntegration::Result& ImuIntegration::repropagate(
     const Vector3d& curr_gyro_discret_vars = gyro_discret_vars_[i];
     int accel_idx = options_.rotation_only ? 0 : i;
     const Vector3d& accel = accel_measurements_[accel_idx];
-    const Vector3d& curr_accel_discret_vars = accel_discret_vars_[i];
+    const Vector3d& curr_accel_discret_vars = accel_discret_vars_[accel_idx];
 
     double dt = timestamp - last_time;
     int result_idx = options_.cache_intermediate_results ? i : 0;
@@ -275,7 +318,7 @@ void ImuIntegration::interpolate(
   if (!options_.rotation_only) {
     interpolated->v() = state0.v() + alpha * deltaV01;
     interpolated->p() =
-        state0.p() + 0.5 * dt0 * (state0.p() + interpolated->v());
+        state0.p() + 0.5 * dt0 * (state0.v() + interpolated->v());
   }
 }
 
@@ -303,21 +346,60 @@ void ImuIntegration::interpolate(
 }
 
 struct ImuIntegration::DeltaToNext {
+  bool available{false};
   State state;
   Eigen::Vector3d deltaR_to_next;
   Eigen::Vector3d deltaV_to_next;
 };
 
+void ImuIntegration::applyBiasCorrection(
+    const Result& result, const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias, State* state) const {
+  if (options_.rotation_only) {
+    const Vector3d rotation_correction = result.J_bias * delta_gyro_bias;
+    state->R() = SO3d::Exp(rotation_correction) * state->R();
+    return;
+  }
+
+  Vector<6> bias_correction;
+  bias_correction << delta_gyro_bias, delta_acc_bias;
+  const Vector3d rotation_correction =
+      result.J_bias.block<3, 6>(0, 0) * bias_correction;
+  state->R() = SO3d::Exp(rotation_correction) * state->R();
+  state->p() += result.J_bias.block<3, 6>(3, 0) * bias_correction;
+  state->v() += result.J_bias.block<3, 6>(6, 0) * bias_correction;
+}
+
+bool ImuIntegration::shouldApplyBiasCorrection(
+    const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias) const {
+  static constexpr double kMinBiasDeltaNorm = 1e-6;
+  return options_.compute_jacobian_wrt_bias &&
+         (delta_gyro_bias.norm() > kMinBiasDeltaNorm ||
+          delta_acc_bias.norm() > kMinBiasDeltaNorm);
+}
+
 bool ImuIntegration::retrieveState(
     int begin_idx, const Timestamp& timestamp, State* state, bool apply_gravity,
     double gravity_magnitude, const Vector3d& gravity_direction_in_ref,
-    std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>>* cached_deltas)
-    const {
+    bool correct_bias,
+    const Vector3d& delta_gyro_bias, const Vector3d& delta_acc_bias,
+    DeltaToNext* cached_delta) const {
+  if (begin_idx < 0 || begin_idx >= timestamps_.size() ||
+      results_.size() != timestamps_.size()) {
+    return false;
+  }
   if (timestamps_[begin_idx] == timestamp) {
-    *state = results_[begin_idx].state;
-    if (apply_gravity) {
-      applyGravity(
-          timestamp, gravity_magnitude * gravity_direction_in_ref, state);
+    if (state) {
+      *state = results_[begin_idx].state;
+      if (correct_bias && results_[begin_idx].J_bias.rows() > 0) {
+        applyBiasCorrection(
+            results_[begin_idx], delta_gyro_bias, delta_acc_bias, state);
+      }
+      if (apply_gravity) {
+        applyGravity(
+            timestamp, gravity_magnitude * gravity_direction_in_ref, state);
+      }
     }
     return true;
   } else if (begin_idx == 0) {
@@ -328,25 +410,34 @@ bool ImuIntegration::retrieveState(
     return false;
   } else {
     ASSERT(begin_idx > 0 && begin_idx < timestamps_.size());
+    if (!state) {
+      return true;
+    }
     double t0 = timestamps_[begin_idx - 1];
     double t1 = timestamps_[begin_idx];
 
     // If we have already computed the delta between these two timestamps,
     // we can use it to speed up the interpolation
-    if (cached_deltas) {
-      auto it = cached_deltas->find(t0);
-      if (it != cached_deltas->end()) {
-        const auto& state0 = it->second->state;
-        interpolate(
-            timestamp, t0, t1, state0, it->second->deltaR_to_next,
-            it->second->deltaV_to_next, state);
-        return true;
-      }
+    if (cached_delta && cached_delta->available) {
+      interpolate(
+          timestamp, t0, t1, cached_delta->state, cached_delta->deltaR_to_next,
+          cached_delta->deltaV_to_next, state);
+      return true;
     }
 
     // Otherwise, we need to compute the delta between these two timestamps
     State state0 = results_[begin_idx - 1].state;
     State state1 = results_[begin_idx].state;
+    if (correct_bias) {
+      if (results_[begin_idx - 1].J_bias.rows() > 0) {
+        applyBiasCorrection(
+            results_[begin_idx - 1], delta_gyro_bias, delta_acc_bias, &state0);
+      }
+      if (results_[begin_idx].J_bias.rows() > 0) {
+        applyBiasCorrection(
+            results_[begin_idx], delta_gyro_bias, delta_acc_bias, &state1);
+      }
+    }
     if (!options_.rotation_only && apply_gravity) {
       Vector3d gravity = gravity_magnitude * gravity_direction_in_ref;
       applyGravity(t0, gravity, &state0);
@@ -357,11 +448,12 @@ bool ImuIntegration::retrieveState(
     Eigen::Vector3d deltaR01;
     Eigen::Vector3d deltaV01;
     interpolate(timestamp, t0, t1, state0, state1, state, &deltaR01, &deltaV01);
-    if (cached_deltas) {
+    if (cached_delta) {
       // Cache the delta between these two timestamps
-      cached_deltas->emplace(
-          t0, std::make_shared<DeltaToNext>(
-                  DeltaToNext{state0, deltaR01, deltaV01}));
+      cached_delta->state = state0;
+      cached_delta->deltaR_to_next = deltaR01;
+      cached_delta->deltaV_to_next = deltaV01;
+      cached_delta->available = true;
     }
 
     return true;
@@ -370,7 +462,30 @@ bool ImuIntegration::retrieveState(
 
 bool ImuIntegration::retrieveState(
     const Timestamp& timestamp, State* state, bool apply_gravity,
-    double gravity_magnitude, const Vector3d& gravity_direction_in_ref) const {
+    double gravity_magnitude, const Vector3d& gravity_direction_in_ref,
+    const Vector3d& delta_gyro_bias, const Vector3d& delta_acc_bias) const {
+  if (timestamps_.empty() || results_.empty()) {
+    return false;
+  }
+  const bool correct_bias =
+      shouldApplyBiasCorrection(delta_gyro_bias, delta_acc_bias);
+  if (timestamp == timestamps_.back()) {
+    if (state) {
+      *state = results_.back().state;
+      if (correct_bias && results_.back().J_bias.rows() > 0) {
+        applyBiasCorrection(
+            results_.back(), delta_gyro_bias, delta_acc_bias, state);
+      }
+      if (!options_.rotation_only && apply_gravity) {
+        applyGravity(
+            timestamp, gravity_magnitude * gravity_direction_in_ref, state);
+      }
+    }
+    return true;
+  }
+  if (results_.size() != timestamps_.size()) {
+    return false;
+  }
   // // Test retrieveStates() (with multiple timestamps)
   // auto states = retrieveStates(
   //     {timestamp}, apply_gravity,  //
@@ -387,23 +502,38 @@ bool ImuIntegration::retrieveState(
     int begin_idx = *search_res;
     return retrieveState(
         begin_idx, timestamp, state, apply_gravity, gravity_magnitude,
-        gravity_direction_in_ref);
+        gravity_direction_in_ref, correct_bias, delta_gyro_bias,
+        delta_acc_bias);
   } else {
     return false;
   }
 }
 
-std::unordered_map<ImuIntegration::Timestamp, ImuIntegration::State>
+std::map<ImuIntegration::Timestamp, ImuIntegration::State>
 ImuIntegration::retrieveStates(
     const std::vector<Timestamp>& timestamps, bool apply_gravity,
-    double gravity_magnitude, const Vector3d& gravity_direction_in_ref) const {
-  if (timestamps.empty()) {
+    double gravity_magnitude, const Vector3d& gravity_direction_in_ref,
+    const Vector3d& delta_gyro_bias, const Vector3d& delta_acc_bias) const {
+  if (timestamps.empty() || timestamps_.empty() || results_.empty()) {
     return {};
   }
+  const bool correct_bias =
+      shouldApplyBiasCorrection(delta_gyro_bias, delta_acc_bias);
 
-  std::unordered_map<Timestamp, State> states;
-  states.rehash(2 * timestamps.size());
-  std::unordered_map<Timestamp, std::shared_ptr<DeltaToNext>> cached_deltas;
+  std::map<Timestamp, State> states;
+  if (results_.size() != timestamps_.size()) {
+    if (std::find(timestamps.begin(), timestamps.end(), timestamps_.back()) !=
+        timestamps.end()) {
+      State latest_state;
+      if (retrieveState(
+              timestamps_.back(), &latest_state, apply_gravity,
+              gravity_magnitude, gravity_direction_in_ref, delta_gyro_bias,
+              delta_acc_bias)) {
+        states.emplace(timestamps_.back(), std::move(latest_state));
+      }
+    }
+    return states;
+  }
 
   // Find the search range
   auto [it_min, it_max] =
@@ -421,6 +551,7 @@ ImuIntegration::retrieveStates(
   }
   auto it_begin = timestamps_.begin() + begin_idx;
   auto it_end = timestamps_.begin() + end_idx;
+  std::vector<DeltaToNext> cached_deltas(end_idx - begin_idx);
 
   // Iterate over all queried timestamps
   for (const auto& timestamp : timestamps) {
@@ -430,10 +561,15 @@ ImuIntegration::retrieveStates(
     State state;
     auto search_res = binarySearchLowerBound(it_begin, it_end, timestamp);
     if (search_res) {
-      int begin_idx = *search_res - timestamps_.begin();
+      int query_begin_idx = *search_res - timestamps_.begin();
+      if (query_begin_idx < begin_idx || query_begin_idx >= end_idx) {
+        continue;
+      }
+      DeltaToNext* cached_delta = &cached_deltas[query_begin_idx - begin_idx];
       if (retrieveState(
-              begin_idx, timestamp, &state, apply_gravity, gravity_magnitude,
-              gravity_direction_in_ref, &cached_deltas)) {
+              query_begin_idx, timestamp, &state, apply_gravity,
+              gravity_magnitude, gravity_direction_in_ref, correct_bias,
+              delta_gyro_bias, delta_acc_bias, cached_delta)) {
         states[timestamp] = state;
       }
     }
@@ -441,8 +577,147 @@ ImuIntegration::retrieveStates(
   return states;
 }
 
+bool ImuIntegration::retrieveAngularVelocity(
+    const Timestamp& timestamp, Vector3d* angular_velocity,
+    const Vector3d& delta_gyro_bias) const {
+  if (timestamps_.empty() || results_.empty()) {
+    return false;
+  }
+  if (timestamp == timestamps_.back()) {
+    if (angular_velocity) {
+      *angular_velocity =
+          results_.back().angular_velocity - delta_gyro_bias;
+    }
+    return true;
+  }
+  if (results_.size() != timestamps_.size()) {
+    return false;
+  }
+
+  const auto search_res = binarySearchLowerBound(timestamps_, timestamp);
+  if (!search_res) {
+    return false;
+  }
+  const int upper_idx = *search_res;
+  if (timestamps_[upper_idx] == timestamp) {
+    if (angular_velocity) {
+      *angular_velocity =
+          results_[upper_idx].angular_velocity - delta_gyro_bias;
+    }
+    return true;
+  }
+  if (upper_idx == 0) {
+    return false;
+  }
+  if (angular_velocity) {
+    const double t0 = timestamps_[upper_idx - 1];
+    const double t1 = timestamps_[upper_idx];
+    const double alpha = (timestamp - t0) / (t1 - t0);
+    *angular_velocity =
+        (1.0 - alpha) * results_[upper_idx - 1].angular_velocity +
+        alpha * results_[upper_idx].angular_velocity - delta_gyro_bias;
+  }
+  return true;
+}
+
+std::map<ImuIntegration::Timestamp, Vector3d>
+ImuIntegration::retrieveAngularVelocities(
+    const std::vector<Timestamp>& timestamps,
+    const Vector3d& delta_gyro_bias) const {
+  std::map<Timestamp, Vector3d> angular_velocities;
+  for (const Timestamp& timestamp : timestamps) {
+    if (angular_velocities.count(timestamp)) {
+      continue;
+    }
+    Vector3d angular_velocity;
+    if (retrieveAngularVelocity(
+            timestamp, &angular_velocity, delta_gyro_bias)) {
+      angular_velocities.emplace(timestamp, std::move(angular_velocity));
+    }
+  }
+  return angular_velocities;
+}
+
+bool ImuIntegration::retrieveRelativeState(
+    const Timestamp& ref_time, const Timestamp& timestamp, State* state,
+    bool apply_gravity, double gravity_magnitude,
+    const Vector3d& gravity_direction_in_ref,
+    const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias) const {
+  State ref_state;
+  State query_state;
+  if (!retrieveState(
+          ref_time, &ref_state, false, gravity_magnitude,
+          gravity_direction_in_ref, delta_gyro_bias, delta_acc_bias) ||
+      !retrieveState(
+          timestamp, &query_state, false, gravity_magnitude,
+          gravity_direction_in_ref, delta_gyro_bias, delta_acc_bias)) {
+    return false;
+  }
+  if (!state) {
+    return true;
+  }
+
+  const double dt = timestamp - ref_time;
+  *state = computeRelativeState(ref_state, query_state, dt);
+  if (!options_.rotation_only && apply_gravity) {
+    const Vector3d gravity = gravity_magnitude * gravity_direction_in_ref;
+    state->p() -= 0.5 * dt * dt * gravity;
+    state->v() -= dt * gravity;
+  }
+  return true;
+}
+
+std::map<ImuIntegration::Timestamp, ImuIntegration::State>
+ImuIntegration::retrieveRelativeStates(
+    const Timestamp& ref_time, const std::vector<Timestamp>& timestamps,
+    bool apply_gravity, double gravity_magnitude,
+    const Vector3d& gravity_direction_in_ref,
+    const Vector3d& delta_gyro_bias,
+    const Vector3d& delta_acc_bias) const {
+  if (timestamps.empty()) {
+    return {};
+  }
+
+  std::vector<Timestamp> accumulated_state_times = timestamps;
+  accumulated_state_times.push_back(ref_time);
+  const auto accumulated_states = retrieveStates(
+      accumulated_state_times, false, gravity_magnitude,
+      gravity_direction_in_ref, delta_gyro_bias, delta_acc_bias);
+  const auto ref_state_it = accumulated_states.find(ref_time);
+  if (ref_state_it == accumulated_states.end()) {
+    return {};
+  }
+
+  std::map<Timestamp, State> relative_states;
+  const Vector3d gravity = gravity_magnitude * gravity_direction_in_ref;
+  for (const Timestamp& timestamp : timestamps) {
+    const auto state_it = accumulated_states.find(timestamp);
+    if (state_it == accumulated_states.end() ||
+        relative_states.count(timestamp)) {
+      continue;
+    }
+    const double dt = timestamp - ref_time;
+    State relative_state =
+        computeRelativeState(ref_state_it->second, state_it->second, dt);
+    if (!options_.rotation_only && apply_gravity) {
+      relative_state.p() -= 0.5 * dt * dt * gravity;
+      relative_state.v() -= dt * gravity;
+    }
+    relative_states.emplace(timestamp, std::move(relative_state));
+  }
+  return relative_states;
+}
+
 const ImuIntegration::Result* ImuIntegration::findResult(
     const Timestamp& timestamp) const {
+  if (!timestamps_.empty() && !results_.empty() &&
+      timestamp == timestamps_.back()) {
+    return &results_.back();
+  }
+  if (results_.size() != timestamps_.size()) {
+    return nullptr;
+  }
   auto search_res = binarySearchFirst(timestamps_, timestamp);
   if (!search_res) {
     return nullptr;
@@ -611,9 +886,11 @@ ImuIntegration::Result ImuIntegration::integrate(
         (new_accel_discret_vars + prev_accel_discret_vars) / 2.0;
   }
 
-  return integrate(
+  Result result = integrate(
       prev_result, dt, mean_gyro, mean_accel, mean_gyro_discret_vars,
       mean_accel_discret_vars);
+  result.angular_velocity = new_gyro - gyro_bias_;
+  return result;
 }
 
 void ImuIntegration::applyGravity(
